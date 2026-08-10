@@ -93,12 +93,13 @@ pythales/
 
 3. **Install dependencies**:
    ```bash
-   pip install -r requirements.txt
+   pip install pycryptodome tracetools
+   pip install --no-deps pynblock
    ```
 
 4. **Install the `pythales` package**:
    ```bash
-   pip install -e .
+   pip install --no-deps -e .
    ```
 
 ---
