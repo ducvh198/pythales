@@ -1,0 +1,14 @@
+services:
+  hsm_server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${HSM_PORT:-1500}:${HSM_PORT:-1500}"
+    environment:
+      HSM_PORT: "${HSM_PORT:-1500}"
+      HSM_HEADER: "${HSM_HEADER:-}"
+      HSM_KEY: "${HSM_KEY:-deadbeefdeadbeefdeadbeefdeadbeef}"
+      HSM_DEBUG: "${HSM_DEBUG:-false}"
+      HSM_SKIP_PARITY: "${HSM_SKIP_PARITY:-false}"
+      HSM_APPROVE_ALL: "${HSM_APPROVE_ALL:-false}"

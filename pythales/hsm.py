@@ -461,7 +461,7 @@ class HSM():
     def __init__(self, header=None, key=None, debug=None, skip_parity=None, port=None, approve_all=None):
         self.firmware_version = '0007-E000'        
         self.header = str2bytes(header) if header else b''
-        self.LMK = unhexlify(key) if key else unhexlify('deafbeedeafbeedeafbeedeafbeedeaf')
+        self.LMK = unhexlify(key) if key else unhexlify('DEAFBEEDEAFBEEDEAFBEEDEAFBEEDEAF')
         self.cipher = DES3.new(self.LMK, DES3.MODE_ECB)
         self.debug = debug
         self.skip_parity_check = skip_parity

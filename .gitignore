@@ -58,3 +58,7 @@ target/
 iso/
 /.pydevproject
 /.project
+
+#agent
+.agents
+!.agents/skills

@@ -1,4 +1,3 @@
 pycryptodome
 tracetools
 pynblock
-pythales

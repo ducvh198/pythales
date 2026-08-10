@@ -106,7 +106,7 @@ class TestA0(unittest.TestCase):
     def test_zmk_tpk_flag_parsed(self):
         self.assertEqual(self.a0.fields['ZMK/TMK Flag'], b'1')
 
-    def test_zmk_tpk_flag_parsed(self):
+    def test_zmk_tpk_key_parsed(self):
         self.assertEqual(self.a0.fields['ZMK/TMK'], b'U4EE249B7C0D842960728DF1B2EC8701E')
 
 
@@ -471,7 +471,7 @@ class TestHSMThread(unittest.TestCase):
         self.assertEqual(response.get('Response Code'), b'A1')
         self.assertEqual(response.get('Error Code'), b'00')
 
-    def test_generate_key_a0_proper_response_code(self):
+    def test_generate_key_a0_with_zmk_proper_response_code(self):
         """
         """
         data = b'170DU;1U4EE249B7C0D842960728DF1B2EC8701EX'
