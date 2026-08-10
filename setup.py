@@ -27,5 +27,5 @@ setup(name='pythales',
       
       license='LGPLv2',
       packages=['pythales'],
-      install_requires=['pycrypto', 'tracetools', 'pynblock'],
+      install_requires=['pycryptodome', 'tracetools', 'pynblock'],
       zip_safe=True)

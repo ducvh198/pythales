@@ -6,6 +6,7 @@ import os
 
 from tracetools.tracetools import trace
 from collections import OrderedDict
+import pythales.compat
 from Crypto.Cipher import DES, DES3
 from binascii import hexlify, unhexlify
 from pynblock.tools import str2bytes, raw2str, raw2B, B2raw, xor, get_visa_pvv, get_visa_cvv, get_digits_from_string, key_CV, get_clear_pin, check_key_parity, modify_key_parity
@@ -52,7 +53,8 @@ class DummyMessage():
         if self.description:
             dump = dump + '\t[' + 'Command Description'.ljust(width, ' ') + ']: [' + self.description + ']\n'
         for key, value in self.fields.items():
-            dump = dump + '\t[' + key.ljust(width, ' ') + ']: [' + value.decode('utf-8') + ']\n'
+            str_val = value.decode('utf-8', errors='replace') if isinstance(value, bytes) else str(value if value is not None else '')
+            dump = dump + '\t[' + key.ljust(width, ' ') + ']: [' + str_val + ']\n'
         return dump
 
 
@@ -393,6 +395,18 @@ class NC(DummyMessage):
         self.fields = OrderedDict()
 
 
+class NO(DummyMessage):
+    """
+    Echo / Network test
+    """
+    def __init__(self, data):
+        self.data = data
+        self.command_code = b'NO'
+        self.description = 'Echo / Network test'
+        self.fields = OrderedDict()
+        self.fields['Data'] = data
+
+
 class OutgoingMessage(DummyMessage):
     def __init__(self, data=None, header=None):
         self.header = header
@@ -436,10 +450,8 @@ def parse_message(data=None, header=None):
         raise ValueError('Expected message of length {0} but actual received message length is {1}'.format(length, len(data) - 2))
     
     if header:
-        for h, d in zip(header, data[2:]):
-            if h != d:
-                raise ValueError('Invalid header')
-        header = header 
+        if len(data[2:]) < len(header) or data[2:2+len(header)] != header:
+            raise ValueError('Invalid header')
 
     data = data[2 + len(header) : ] if header else data[2:]
     return (data[:2], data[2:])
@@ -460,6 +472,8 @@ class HSM():
 
 
     def init_connection(self):
+        """
+        """
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.bind(('', self.port))   
@@ -475,7 +489,7 @@ class HSM():
         """
         data = self.conn.recv(4096)
         if len(data):
-            trace('<< {} bytes received from {}: '.format(len(data), client_name), data)
+            trace(data, title='<< {} bytes received from {}: '.format(len(data), client_name))
             return data
         else:
             self.conn.shutdown(socket.SHUT_RDWR)
@@ -488,7 +502,7 @@ class HSM():
         """
         response_data = response.build()
         self.conn.send(response_data)
-        trace('>> {} bytes sent to {}:'.format(len(response_data), client_name), response_data)
+        trace(response_data, title='>> {} bytes sent to {}:'.format(len(response_data), client_name))
         print(response.trace())
         
 
@@ -507,7 +521,12 @@ class HSM():
                 except IOError:
                     break
 
-                command_code, command_data = parse_message(data, header=self.header)
+                try:
+                    command_code, command_data = parse_message(data, header=self.header)
+                except ValueError as e:
+                    print('Error parsing message from {}: {}'.format(client_name, e))
+                    continue
+
                 if command_code == b'A0':
                     request = A0(command_data)
                 elif command_code == b'BU':
@@ -528,12 +547,19 @@ class HSM():
                     request = HC(command_data)
                 elif command_code == b'NC':
                     request = NC(command_data)
+                elif command_code == b'NO':
+                    request = NO(command_data)
                 else:
                     print('\nUnsupported command: ' + str(command_code, 'utf-8'));
                     request = None
     
-                print(request.trace())
-                response = self.get_response(request)
+                if request:
+                    print(request.trace())
+                response = self.get_response(request) if request else None
+                if not response:
+                    response = OutgoingMessage(header=self.header)
+                    response.set_response_code('ZZ')
+                    response.set_error_code('00')
                 self.send(response, client_name)
            
 
@@ -797,6 +823,18 @@ class HSM():
         return response
 
 
+    def echo_network_test(self, request):
+        """
+        Get response to NO command
+        """
+        response = OutgoingMessage(header=self.header)
+        response.set_response_code('NP')
+        response.set_error_code('00')
+        if request and request.get('Data'):
+            response.set('Data', request.get('Data'))
+        return response
+
+
     def get_key_check_value(self, request):
         """
         Get response to BU command
@@ -825,14 +863,16 @@ class HSM():
         new_key_under_lmk = self.cipher.encrypt(new_clear_key)
         response.set('Key under LMK', b'U' + raw2B(new_key_under_lmk))
 
-        zmk_under_lmk = request.get('ZMK/TMK')[1:33]
-        if zmk_under_lmk:
-            clear_zmk = self.cipher.decrypt(B2raw(zmk_under_lmk))
-            zmk_key_cipher = DES3.new(clear_zmk, DES3.MODE_ECB)
-            new_key_under_zmk = zmk_key_cipher.encrypt(new_clear_key)
+        zmk_param = request.get('ZMK/TMK')
+        if zmk_param:
+            zmk_under_lmk = zmk_param[1:33]
+            if zmk_under_lmk:
+                clear_zmk = self.cipher.decrypt(B2raw(zmk_under_lmk))
+                zmk_key_cipher = DES3.new(clear_zmk, DES3.MODE_ECB)
+                new_key_under_zmk = zmk_key_cipher.encrypt(new_clear_key)
 
-            response.set('Key under ZMK', b'U' + raw2B(new_key_under_zmk))
-            response.set('Key Check Value', key_CV(raw2B(new_clear_key), 6))
+                response.set('Key under ZMK', b'U' + raw2B(new_key_under_zmk))
+                response.set('Key Check Value', key_CV(raw2B(new_clear_key), 6))
 
         return response
 
@@ -884,6 +924,8 @@ class HSM():
             return self.get_key_check_value(request)
         elif rqst_command_code == b'NC':
             return self.get_diagnostics_data()
+        elif rqst_command_code == b'NO':
+            return self.echo_network_test(request)
         elif rqst_command_code in [b'DC', b'EC']:
             return self.verify_pin(request)
         elif rqst_command_code == b'CA':

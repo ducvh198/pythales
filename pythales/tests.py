@@ -2,7 +2,7 @@
 
 import unittest
 
-from pythales.hsm import HSM, OutgoingMessage, DummyMessage, A0, BU, CA, CW, CY, DC, EC, HC, NC, parse_message
+from pythales.hsm import HSM, OutgoingMessage, DummyMessage, A0, BU, CA, CW, CY, DC, EC, HC, NC, NO, parse_message
 
 
 class TestDummyMessage(unittest.TestCase):
@@ -525,6 +525,12 @@ class TestHSMResponsesMapping(unittest.TestCase):
         response = self.hsm.get_response(NC(b''))
         self.assertEqual(response.get('Response Code'), b'ND')
         self.assertEqual(response.get('Error Code'), b'00')
+
+    def test_NO_response(self):
+        response = self.hsm.get_response(NO(b'00'))
+        self.assertEqual(response.get('Response Code'), b'NP')
+        self.assertEqual(response.get('Error Code'), b'00')
+        self.assertEqual(response.get('Data'), b'00')
 
 if __name__ == '__main__':
     unittest.main()
