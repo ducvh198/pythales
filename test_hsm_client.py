@@ -173,6 +173,104 @@ def test_a0_generate_key(sock, header_bytes):
     return True
 
 
+def test_no_echo(sock, header_bytes):
+    """
+    Test Case 3: Send NO (Network Echo Test) command.
+    Verify NP response and identical echoed payload.
+    """
+    print("\n--- Test Case 3: Send NO (Network Echo Test) Command ---")
+    req_payload = b"NOPAYSHIELD_ECHO_DATA_1234"
+    try:
+        resp_payload = send_receive_framed(sock, header_bytes, req_payload)
+    except Exception as e:
+        print(f"[FAIL] Error communicating with server: {e}")
+        return False
+
+    resp_code = resp_payload[:2].decode("utf-8", errors="replace")
+    err_code = resp_payload[2:4].decode("utf-8", errors="replace")
+    echo_data = resp_payload[4:]
+
+    print(f"  Response Code: '{resp_code}'")
+    print(f"  Error Code:    '{err_code}'")
+    print(f"  Echo Data:     {echo_data!r}")
+
+    if resp_code != "NP" or err_code != "00" or echo_data != b"PAYSHIELD_ECHO_DATA_1234":
+        print(f"[FAIL] NO Echo failed: expected NP 00 PAYSHIELD_ECHO_DATA_1234")
+        return False
+
+    print("[PASS] Test Case 3 (NO Network Echo) passed successfully.")
+    return True
+
+
+def test_cvv_workflow(sock, header_bytes):
+    """
+    Test Case 4: CW (Generate CVV) and CY (Verify CVV).
+    """
+    print("\n--- Test Case 4: Send CW (Generate CVV) & CY (Verify CVV) ---")
+    # Generate CVK key (KeyType 003)
+    gen_cw = send_receive_framed(sock, header_bytes, b"A00003U")
+    cvk_key = gen_cw[4:4+33].decode("ascii")
+
+    # CW Generate CVV
+    cw_req = f"CW{cvk_key}41111111111111112512101".encode("ascii")
+    cw_resp = send_receive_framed(sock, header_bytes, cw_req)
+    if not cw_resp.startswith(b"CX00"):
+        print(f"[FAIL] CW response error: {cw_resp!r}")
+        return False
+
+    cvv = cw_resp[4:].decode("ascii")
+    print(f"  Generated CVV: '{cvv}'")
+
+    # CY Verify CVV
+    cy_req = f"CY{cvk_key}{cvv}4111111111111111112512101".encode("ascii")
+    cy_resp = send_receive_framed(sock, header_bytes, cy_req)
+    if cy_resp != b"CZ00":
+        print(f"[FAIL] CY verify failed: {cy_resp!r}")
+        return False
+
+    print("[PASS] Test Case 4 (CW/CY CVV Workflow) passed successfully.")
+    return True
+
+
+def test_m0_m2_data_encrypt(sock, header_bytes):
+    """
+    Test Case 5: M0 (Encrypt Data) and M2 (Decrypt Data).
+    """
+    print("\n--- Test Case 5: Send M0 (Encrypt Data) & M2 (Decrypt Data) ---")
+    # Generate DEK key (KeyType 008)
+    gen_dek = send_receive_framed(sock, header_bytes, b"A00008U")
+    dek_key = gen_dek[4:4+33].decode("ascii")
+
+    # M0 Encrypt
+    plaintext_hex = "504159534849454C44313233343536"
+    m0_req = f"M0{dek_key}0000F{plaintext_hex}".encode("ascii")
+    m0_resp = send_receive_framed(sock, header_bytes, m0_req)
+    if not m0_resp.startswith(b"M100"):
+        print(f"[FAIL] M0 encrypt failed: {m0_resp!r}")
+        return False
+
+    enc_hex = m0_resp[4:].decode("ascii")
+    print(f"  Encrypted Hex: '{enc_hex}'")
+
+    # M2 Decrypt
+    len_hex = f"{len(enc_hex) // 2:04X}"
+    m2_req = f"M2{dek_key}0{len_hex}{enc_hex}".encode("ascii")
+    m2_resp = send_receive_framed(sock, header_bytes, m2_req)
+    if not m2_resp.startswith(b"M300"):
+        print(f"[FAIL] M2 decrypt failed: {m2_resp!r}")
+        return False
+
+    dec_hex = m2_resp[4:].decode("ascii")
+    print(f"  Decrypted Hex: '{dec_hex}'")
+
+    if dec_hex != plaintext_hex:
+        print(f"[FAIL] Decrypted text mismatch: expected {plaintext_hex}, got {dec_hex}")
+        return False
+
+    print("[PASS] Test Case 5 (M0/M2 Data Encryption) passed successfully.")
+    return True
+
+
 def main():
     env_host = os.environ.get("HSM_HOST", "127.0.0.1")
     env_port_str = os.environ.get("HSM_PORT", "1500")
@@ -226,11 +324,14 @@ def main():
     try:
         tc1_passed = test_nc_diagnostics(sock, header_bytes)
         tc2_passed = test_a0_generate_key(sock, header_bytes)
+        tc3_passed = test_no_echo(sock, header_bytes)
+        tc4_passed = test_cvv_workflow(sock, header_bytes)
+        tc5_passed = test_m0_m2_data_encrypt(sock, header_bytes)
     finally:
         sock.close()
 
     print("\n==================================================")
-    if tc1_passed and tc2_passed:
+    if all([tc1_passed, tc2_passed, tc3_passed, tc4_passed, tc5_passed]):
         print(" ALL VERIFICATION TESTS PASSED SUCCESSFULLY! [EXIT 0]")
         print("==================================================")
         return 0
@@ -238,6 +339,7 @@ def main():
         print(" VERIFICATION FAILED - ONE OR MORE TESTS FAILED! [EXIT 1]")
         print("==================================================")
         return 1
+
 
 
 if __name__ == "__main__":

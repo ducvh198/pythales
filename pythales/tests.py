@@ -532,5 +532,80 @@ class TestHSMResponsesMapping(unittest.TestCase):
         self.assertEqual(response.get('Error Code'), b'00')
         self.assertEqual(response.get('Data'), b'00')
 
+
+class TestPriorityCommands(unittest.TestCase):
+    def setUp(self):
+        self.hsm = HSM()
+
+    def test_package_export(self):
+        from pythales import HSM as ExportedHSM
+        hsm_inst = ExportedHSM()
+        self.assertIsNotNone(hsm_inst)
+
+    def test_network_echo_no(self):
+        request_raw = b"\x00\x0CNOECHO_TEST!"
+        response_raw = self.hsm.process_raw_message(request_raw)
+        # Expect response starting with NP + 00 + ECHO_TEST!
+        self.assertTrue(response_raw.startswith(b"NP00ECHO_TEST!"))
+
+    def test_generate_key_a0(self):
+        # Mode 0 (under LMK), KeyType 001 (ZPK), Scheme U
+        request_raw = b"A00001U"
+        response_raw = self.hsm.process_raw_message(request_raw)
+        self.assertTrue(response_raw.startswith(b"A100"))
+        # Payload format: A1 (2) + 00 (2) + 'U' + 32-hex-key + 6-hex-kcv = 43 chars
+        self.assertEqual(len(response_raw), 4 + 1 + 32 + 6)
+
+    def test_cvv_workflow_cw_cy(self):
+        # A0 Generate CVK (KeyType 003)
+        gen_cw_key = self.hsm.process_raw_message(b"A00003U")
+        cvk_hex = gen_cw_key[4:4+33].decode("ascii")
+
+        # CW Generate CVV
+        # CW + CVK (33) + PAN (16) + Exp (4) + ServiceCode (3)
+        cw_req = f"CW{cvk_hex}41111111111111112512101".encode("ascii")
+        cw_resp = self.hsm.process_raw_message(cw_req)
+        self.assertTrue(cw_resp.startswith(b"CX00"))
+        generated_cvv = cw_resp[4:].decode("ascii")
+        self.assertEqual(len(generated_cvv), 3)
+
+        # CY Verify CVV (valid)
+        cy_req = f"CY{cvk_hex}{generated_cvv}41111111111111112512101".encode("ascii")
+        cy_resp = self.hsm.process_raw_message(cy_req)
+        self.assertEqual(cy_resp, b"CZ00")
+
+        # CY Verify CVV (invalid CVV)
+        cy_bad_req = f"CY{cvk_hex}999411111111111111112512101".encode("ascii")
+        cy_bad_resp = self.hsm.process_raw_message(cy_bad_req)
+        self.assertEqual(cy_bad_resp[:4], b"CZ01")
+
+
+
+
+
+
+    def test_data_encryption_m0_m2(self):
+        # Generate DEK (KeyType 008)
+        gen_dek = self.hsm.process_raw_message(b"A00008U")
+        dek_hex = gen_dek[4:4+33].decode("ascii")
+
+        # M0 Encrypt Data (ECB mode '0')
+        # Plaintext "PAYSHIELD123456" -> 15 bytes -> hex len 000F
+        plaintext_hex = "504159534849454C44313233343536"
+        m0_req = f"M0{dek_hex}0000F{plaintext_hex}".encode("ascii")
+        m0_resp = self.hsm.process_raw_message(m0_req)
+        self.assertTrue(m0_resp.startswith(b"M100"))
+        encrypted_hex = m0_resp[4:].decode("ascii")
+
+        # M2 Decrypt Data
+        enc_bytes_len = len(encrypted_hex) // 2
+        len_hex = f"{enc_bytes_len:04X}"
+        m2_req = f"M2{dek_hex}0{len_hex}{encrypted_hex}".encode("ascii")
+        m2_resp = self.hsm.process_raw_message(m2_req)
+        self.assertTrue(m2_resp.startswith(b"M300"))
+        decrypted_hex = m2_resp[4:].decode("ascii")
+        self.assertEqual(decrypted_hex, plaintext_hex)
+
+
 if __name__ == '__main__':
-    unittest.main()
+    unittest.main()

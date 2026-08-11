@@ -11,6 +11,16 @@ from Crypto.Cipher import DES, DES3
 from binascii import hexlify, unhexlify
 from pynblock.tools import str2bytes, raw2str, raw2B, B2raw, xor, get_visa_pvv, get_visa_cvv, get_digits_from_string, key_CV, get_clear_pin, check_key_parity, modify_key_parity
 
+from pythales.crypto.lmk import LMKEngine
+from pythales.core.frame import MessageFraming, CommandFrame
+from pythales.core.router import global_router, CommandRouter
+from pythales.core.errors import ErrorCodes, PayShieldException
+import pythales.commands.diagnostics
+import pythales.commands.key_mgmt
+import pythales.commands.card_verify
+import pythales.commands.mac_data
+
+
 
 class DummyMessage():
     def __init__(self, data):
@@ -462,7 +472,9 @@ class HSM():
         self.firmware_version = '0007-E000'        
         self.header = str2bytes(header) if header else b''
         self.LMK = unhexlify(key) if key else unhexlify('DEAFBEEDEAFBEEDEAFBEEDEAFBEEDEAF')
+        self.lmk_engine = LMKEngine(self.LMK)
         self.cipher = DES3.new(self.LMK, DES3.MODE_ECB)
+
         self.debug = debug
         self.skip_parity_check = skip_parity
         self.port = port if port else 1500
@@ -506,6 +518,40 @@ class HSM():
         print(response.trace())
         
 
+    def get_lmk_kcv_16(self) -> bytes:
+        kcv_bytes = self.lmk_engine.encrypt_under_lmk(b"\x00" * 8, variant=0)
+        return hexlify(kcv_bytes).upper()
+
+    def process_raw_message(self, raw_data: bytes) -> bytes:
+        header_len = len(self.header) if self.header else 0
+        frame = MessageFraming.parse_request(raw_data, header_length=header_len)
+        
+        if self.header and frame.header_bytes and frame.header_bytes != self.header:
+            return MessageFraming.format_response(
+                header_bytes=self.header,
+                response_code="ZZ",
+                error_code=ErrorCodes.FUNCTION_NOT_SUPPORTED
+            )
+
+        try:
+            return global_router.dispatch(frame.command_code, self, frame)
+        except PayShieldException as pe:
+            cmd = frame.command_code
+            resp_code = cmd[0] + chr(ord(cmd[1]) + 1) if len(cmd) == 2 else "ZZ"
+            return MessageFraming.format_response(
+                header_bytes=frame.header_bytes or self.header,
+                response_code=resp_code,
+                error_code=pe.error_code
+            )
+        except Exception:
+            cmd = frame.command_code
+            resp_code = cmd[0] + chr(ord(cmd[1]) + 1) if len(cmd) == 2 else "ZZ"
+            return MessageFraming.format_response(
+                header_bytes=frame.header_bytes or self.header,
+                response_code=resp_code,
+                error_code=ErrorCodes.FUNCTION_NOT_SUPPORTED
+            )
+
     def run(self):
         self.init_connection()
         print(self.info())
@@ -521,46 +567,11 @@ class HSM():
                 except IOError:
                     break
 
-                try:
-                    command_code, command_data = parse_message(data, header=self.header)
-                except ValueError as e:
-                    print('Error parsing message from {}: {}'.format(client_name, e))
-                    continue
+                resp_body = self.process_raw_message(data)
+                resp_data = struct.pack("!H", len(resp_body)) + resp_body
+                self.conn.sendall(resp_data)
+                trace(resp_data, title='>> {} bytes sent to {}:'.format(len(resp_data), client_name))
 
-                if command_code == b'A0':
-                    request = A0(command_data)
-                elif command_code == b'BU':
-                    request = BU(command_data)
-                elif command_code == b'CA':
-                    request = CA(command_data)
-                elif command_code == b'CW':
-                    request = CW(command_data)
-                elif command_code == b'CY':
-                    request = CY(command_data)
-                elif command_code == b'DC':
-                    request = DC(command_data)
-                elif command_code == b'EC':
-                    request = EC(command_data)
-                elif command_code == b'FA':
-                    request = FA(command_data)
-                elif command_code == b'HC':
-                    request = HC(command_data)
-                elif command_code == b'NC':
-                    request = NC(command_data)
-                elif command_code == b'NO':
-                    request = NO(command_data)
-                else:
-                    print('\nUnsupported command: ' + str(command_code, 'utf-8'));
-                    request = None
-    
-                if request:
-                    print(request.trace())
-                response = self.get_response(request) if request else None
-                if not response:
-                    response = OutgoingMessage(header=self.header)
-                    response.set_response_code('ZZ')
-                    response.set_error_code('00')
-                self.send(response, client_name)
            
 
     def info(self):
