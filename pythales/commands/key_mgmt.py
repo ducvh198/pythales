@@ -35,7 +35,7 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
     - 'U' / 'X': 33 characters (1 scheme + 32 hex) or 17 characters if single-length
     - 'T' / 'Y': 49 characters (1 scheme + 48 hex)
     - 'Z' / 'D' / 'E' / 'A': 17 characters (1 scheme + 16 hex)
-    - 'S' / 'R': TR-31 / Thales Key Block (dynamic total length parsed from header indices 1:5)
+    - 'S' / 'R': TR-31 / Thales Key Block (dynamic total length parsed from header indices 1:5 or 2:6 if Scheme-prefixed)
     Returns (extracted_key_str, remaining_str).
     """
     if not data_str:
@@ -54,12 +54,21 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
     elif scheme in ("S", "R"):
         if len(data_str) < 16:
             raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "TR-31 header too short")
-        length_str = data_str[1:5]
-        if not length_str.isdigit():
-            raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, f"Invalid TR-31 block length field: '{length_str}'")
-        target_len = int(length_str)
+        if data_str[1:5].isdigit() and data_str[1] == "0":
+            target_len = int(data_str[1:5])
+        elif len(data_str) >= 17 and data_str[2:6].isdigit() and data_str[2] == "0":
+            target_len = 1 + int(data_str[2:6])
+        elif data_str[1:5].isdigit():
+            target_len = int(data_str[1:5])
+        elif len(data_str) >= 17 and data_str[2:6].isdigit():
+            target_len = 1 + int(data_str[2:6])
+        else:
+            raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, f"Invalid TR-31 block length field: '{data_str[1:6]}'")
         if target_len < 16:
             raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, f"TR-31 block length too small: {target_len}")
+
+
+
     else:
         raise PayShieldException(ErrorCodes.INVALID_KEY_SCHEME, f"Unsupported key scheme prefix: '{scheme}'")
 
@@ -134,6 +143,12 @@ class A0Handler(BaseCommandHandler):
                 raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Missing ZMK for mode 1")
 
             zmk_str, rem_after_zmk = _extract_key_string(rem)
+            # Strip optional 6-char hex KCV of ZMK if present before export scheme / spec
+            if len(rem_after_zmk) >= 7 and all(c in "0123456789ABCDEFabcdef" for c in rem_after_zmk[:6]) and rem_after_zmk[6].upper() in ("S", "R", "U", "T", "X", "Y", "M", "E", "#"):
+                rem_after_zmk = rem_after_zmk[6:]
+            elif len(rem_after_zmk) == 6 and all(c in "0123456789ABCDEFabcdef" for c in rem_after_zmk):
+                rem_after_zmk = ""
+
             if rem_after_zmk:
                 export_scheme = rem_after_zmk[0].upper()
                 if "#" in rem_after_zmk:
@@ -144,6 +159,7 @@ class A0Handler(BaseCommandHandler):
                     spec_source = ""
             else:
                 spec_source = ""
+
         else:
             if "#" in rem_spec:
                 spec_source = rem_spec.split("#", 1)[1]
@@ -189,8 +205,12 @@ class A0Handler(BaseCommandHandler):
         raw_key = os.urandom(key_len)
 
         if key_scheme in ("S", "R"):
+            if key_scheme == "S":
+                v_id = "1" if hdr_algorithm == "A" else "S"
+            else:
+                v_id = "D" if hdr_algorithm == "A" else "R"
             hdr = TR31Header(
-                version_id=key_scheme,
+                version_id=v_id,
                 key_length=80,
                 key_usage=default_usage,
                 algorithm=hdr_algorithm,
@@ -200,7 +220,10 @@ class A0Handler(BaseCommandHandler):
             )
             # Wrap under LMK
             key_block = TR31KeyBlock.wrap(raw_key, hdr, self.hsm.LMK)
-            key_lmk_hex = key_block
+            if v_id in ("1", "D"):
+                key_lmk_hex = key_scheme.encode("ascii") + key_block
+            else:
+                key_lmk_hex = key_block
         else:
             enc_key_bytes = self.hsm.lmk_engine.encrypt_under_lmk(raw_key, variant)
             key_lmk_hex = key_scheme.encode("ascii") + hexlify(enc_key_bytes).upper()
@@ -218,8 +241,12 @@ class A0Handler(BaseCommandHandler):
 
             if export_scheme in ("S", "R"):
                 hdr_zmk_alg = "A" if algorithm.startswith("A") else "T"
+                if export_scheme == "S":
+                    v_id_zmk = "1" if hdr_zmk_alg == "A" else "S"
+                else:
+                    v_id_zmk = "D" if hdr_zmk_alg == "A" else "R"
                 hdr_zmk = TR31Header(
-                    version_id=export_scheme,
+                    version_id=v_id_zmk,
                     key_length=80,
                     key_usage=default_usage,
                     algorithm=hdr_zmk_alg,
@@ -227,7 +254,11 @@ class A0Handler(BaseCommandHandler):
                     key_version=key_version,
                     exportability=exportability
                 )
-                key_zmk_hex = TR31KeyBlock.wrap(raw_key, hdr_zmk, zmk_raw)
+                key_block_zmk = TR31KeyBlock.wrap(raw_key, hdr_zmk, zmk_raw)
+                if v_id_zmk in ("1", "D"):
+                    key_zmk_hex = export_scheme.encode("ascii") + key_block_zmk
+                else:
+                    key_zmk_hex = key_block_zmk
             else:
                 if algorithm.startswith("A"):
                     zmk_key = zmk_raw[:32] if len(zmk_raw) >= 32 else (zmk_raw[:24] if len(zmk_raw) >= 24 else zmk_raw[:16])
@@ -239,8 +270,10 @@ class A0Handler(BaseCommandHandler):
                 key_zmk_hex = export_scheme.encode("ascii") + hexlify(enc_key_zmk).upper()
 
             return ErrorCodes.SUCCESS, key_lmk_hex + key_zmk_hex + kcv
+
         else:
             raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, f"Invalid mode '{mode}'")
+
 
 
 

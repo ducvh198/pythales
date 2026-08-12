@@ -9,9 +9,10 @@ from binascii import hexlify, unhexlify
 
 from pythales.hsm import HSM
 from pythales.core.frame import MessageFraming
-from pythales.crypto.lmk import LMKEngine
-from pythales.crypto.keyblock import TR31KeyBlock, parse_header
 from pythales.core.errors import ErrorCodes
+from pythales.crypto.keyblock import TR31KeyBlock, TR31Header
+from pythales.crypto.lmk import LMKEngine
+from pythales.commands.key_mgmt import _extract_key_string
 
 
 class TestA0KeyGeneration(unittest.TestCase):
@@ -40,10 +41,8 @@ class TestA0KeyGeneration(unittest.TestCase):
 
         self.assertTrue(data.startswith("S"))
 
-        # Extract Key Block string
-        target_len = int(data[1:5])
-        kb_str = data[:target_len]
-        kcv = data[target_len:]
+        # Extract Key Block string dynamically
+        kb_str, kcv = _extract_key_string(data)
 
         self.assertEqual(len(kcv), 6)
 
@@ -71,8 +70,7 @@ class TestA0KeyGeneration(unittest.TestCase):
         req_kb = self.make_request(b"A0", b"0FFFS#52T2B00N00")
         data_kb = self.parse_response(self.hsm.process_raw_message(req_kb))
         self.assertTrue(data_kb.startswith("S"))
-        target_len = int(data_kb[1:5])
-        kb_str = data_kb[:target_len]
+        kb_str, kcv = _extract_key_string(data_kb)
         hdr, clear_zmk = TR31KeyBlock.unwrap(kb_str, self.lmk)
         self.assertEqual(hdr.key_usage, "52")
         self.assertEqual(len(clear_zmk), 24)
@@ -80,8 +78,7 @@ class TestA0KeyGeneration(unittest.TestCase):
         # Key Block mode AES-256 ZMK
         req_aes_zmk = self.make_request(b"A0", b"0FFFS#52A3B00N00")
         data_aes_zmk = self.parse_response(self.hsm.process_raw_message(req_aes_zmk))
-        target_len_aes = int(data_aes_zmk[1:5])
-        kb_str_aes = data_aes_zmk[:target_len_aes]
+        kb_str_aes, kcv_aes = _extract_key_string(data_aes_zmk)
         hdr_aes, clear_aes_zmk = TR31KeyBlock.unwrap(kb_str_aes, self.lmk)
         self.assertEqual(hdr_aes.key_usage, "52")
         self.assertEqual(hdr_aes.algorithm, "A")
@@ -100,8 +97,7 @@ class TestA0KeyGeneration(unittest.TestCase):
         # Key Block mode CVK
         req_kb = self.make_request(b"A0", b"0FFFS#C0T2N00N00")
         data_kb = self.parse_response(self.hsm.process_raw_message(req_kb))
-        target_len = int(data_kb[1:5])
-        kb_str = data_kb[:target_len]
+        kb_str, kcv = _extract_key_string(data_kb)
         hdr, clear_cvk = TR31KeyBlock.unwrap(kb_str, self.lmk)
         self.assertEqual(hdr.key_usage, "C0")
         self.assertEqual(len(clear_cvk), 24)
@@ -113,8 +109,7 @@ class TestA0KeyGeneration(unittest.TestCase):
         # Step 1: Generate a ZMK under LMK
         zmk_req = self.make_request(b"A0", b"0000S")
         zmk_data = self.parse_response(self.hsm.process_raw_message(zmk_req))
-        zmk_len = int(zmk_data[1:5])
-        zmk_lmk_str = zmk_data[:zmk_len]
+        zmk_lmk_str, _ = _extract_key_string(zmk_data)
         _, raw_zmk = TR31KeyBlock.unwrap(zmk_lmk_str, self.lmk)
 
         # Step 2: Generate AES-256 DEK under LMK and export under ZMK with TR-31 Scheme 'R'
@@ -122,15 +117,9 @@ class TestA0KeyGeneration(unittest.TestCase):
         req_m1 = self.make_request(b"A0", mode1_payload)
         data_m1 = self.parse_response(self.hsm.process_raw_message(req_m1))
 
-        # Extract Key under LMK
-        len1 = int(data_m1[1:5])
-        dek_lmk_str = data_m1[:len1]
-        rem1 = data_m1[len1:]
-
-        # Extract Key under ZMK
-        len2 = int(rem1[1:5])
-        dek_zmk_str = rem1[:len2]
-        kcv = rem1[len2:]
+        # Extract Key under LMK and Key under ZMK
+        dek_lmk_str, rem1 = _extract_key_string(data_m1)
+        dek_zmk_str, kcv = _extract_key_string(rem1)
 
         self.assertEqual(len(kcv), 6)
 
@@ -155,8 +144,7 @@ class TestA0KeyGeneration(unittest.TestCase):
         # Step 1: Generate a ZMK under LMK
         zmk_req = self.make_request(b"A0", b"0000S")
         zmk_data = self.parse_response(self.hsm.process_raw_message(zmk_req))
-        zmk_len = int(zmk_data[1:5])
-        zmk_lmk_str = zmk_data[:zmk_len]
+        zmk_lmk_str, _ = _extract_key_string(zmk_data)
         _, raw_zmk = TR31KeyBlock.unwrap(zmk_lmk_str, self.lmk)
 
         # Step 2: Generate CVK under LMK and export under ZMK (TR-31 Scheme 'R')
@@ -164,13 +152,8 @@ class TestA0KeyGeneration(unittest.TestCase):
         req_m1 = self.make_request(b"A0", mode1_payload)
         data_m1 = self.parse_response(self.hsm.process_raw_message(req_m1))
 
-        len1 = int(data_m1[1:5])
-        cvk_lmk_str = data_m1[:len1]
-        rem1 = data_m1[len1:]
-
-        len2 = int(rem1[1:5])
-        cvk_zmk_str = rem1[:len2]
-        kcv = rem1[len2:]
+        cvk_lmk_str, rem1 = _extract_key_string(data_m1)
+        cvk_zmk_str, kcv = _extract_key_string(rem1)
 
         self.assertEqual(len(kcv), 6)
 
@@ -180,7 +163,38 @@ class TestA0KeyGeneration(unittest.TestCase):
         hdr_zmk, clear_cvk_zmk = TR31KeyBlock.unwrap(cvk_zmk_str, raw_zmk)
         self.assertEqual(clear_cvk_lmk, clear_cvk_zmk)
 
+    def test_a0_mode1_user_reported_payload(self):
+        """
+        6. Test A0 Mode 1 with user reported payload containing ZMK with 6-char KCV and export spec.
+        """
+        payload = b"1FFFSU60F63114BAC74658B626739DD83F1CBE7BB4C7R#21A3B00E00"
+        req = self.make_request(b"A0", payload)
+        data = self.parse_response(self.hsm.process_raw_message(req))
+
+        # Must return TWO key fields: Key under LMK ('S...') and Key under ZMK ('R...'), then 6-char KCV
+        dek_lmk_str, rem1 = _extract_key_string(data)
+        dek_zmk_str, kcv = _extract_key_string(rem1)
+
+        self.assertTrue(dek_lmk_str.startswith("S"))
+        self.assertTrue(dek_zmk_str.startswith("R"))
+        self.assertEqual(len(kcv), 6)
+
+        hdr_lmk, clear_lmk = TR31KeyBlock.unwrap(dek_lmk_str, self.lmk)
+        self.assertEqual(hdr_lmk.version_id, "1")
+        self.assertEqual(hdr_lmk.key_usage, "21")
+        self.assertEqual(hdr_lmk.algorithm, "A")
+
+        # Unwrap ZMK
+        zmk_enc_bytes = unhexlify("60F63114BAC74658B626739DD83F1CBE")
+        raw_zmk = self.hsm.lmk_engine.decrypt_under_lmk(zmk_enc_bytes, variant=1)
+
+        hdr_zmk, clear_zmk = TR31KeyBlock.unwrap(dek_zmk_str, raw_zmk)
+        self.assertEqual(hdr_zmk.version_id, "D")
+        self.assertEqual(hdr_zmk.key_usage, "21")
+        self.assertEqual(hdr_zmk.algorithm, "A")
+        self.assertEqual(clear_lmk, clear_zmk)
 
 
 if __name__ == "__main__":
     unittest.main()
+

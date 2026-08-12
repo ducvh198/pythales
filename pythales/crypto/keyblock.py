@@ -225,13 +225,21 @@ class TR31KeyBlock:
     @staticmethod
     def unwrap(key_block: Union[bytes, str], kbmk: bytes) -> Tuple[TR31Header, bytes]:
         """
-        Unwrap TR-31 Key Block and return tuple of (TR31Header, clear_key_bytes).
+        Unwrap TR-31 / Thales Key Block and return tuple of (TR31Header, clear_key_bytes).
         """
         kb_str = key_block.decode("ascii", errors="ignore") if isinstance(key_block, bytes) else str(key_block)
+        if len(kb_str) >= 17 and kb_str[0] in ("S", "R") and kb_str[2:6].isdigit() and kb_str[2] == "0" and not (kb_str[1:5].isdigit() and kb_str[1] == "0"):
+            kb_str = kb_str[1:]
+
         if len(kb_str) < 32:
             raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, f"Key block length too short: {len(kb_str)}")
 
         hdr_obj = parse_header(kb_str)
+
+
+
+
+
         header_len = 16 + (len(hdr_obj.optional_headers) if hdr_obj.optional_headers else 0)
         hdr_str = kb_str[:header_len]
 
