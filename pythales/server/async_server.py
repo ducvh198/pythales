@@ -85,6 +85,8 @@ class AsyncHSMServer:
             port=self.port,
         )
         logger.info(f"AsyncHSMServer listening on {self.host}:{self.port}")
+        print(f"AsyncHSMServer listening on {self.host}:{self.port}")
+
 
     async def serve_forever(self) -> None:
         """Serve requests indefinitely until cancelled or stopped."""

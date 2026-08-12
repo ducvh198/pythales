@@ -7,7 +7,9 @@ from binascii import hexlify, unhexlify
 from typing import Tuple, Optional
 
 import Crypto.Cipher.DES3
+import Crypto.Cipher.AES
 from pythales.commands.base import BaseCommandHandler
+
 from pythales.core.router import global_router
 from pythales.core.errors import ErrorCodes, PayShieldException
 from pythales.crypto.lmk import LMKEngine
@@ -18,7 +20,7 @@ KEY_TYPE_VARIANTS = {
     "000": 1,   # ZMK / KEK
     "001": 2,   # ZPK
     "002": 7,   # TPK (Variant 7)
-    "003": 7,   # TMK (Variant 7)
+    "003": 4,   # CVK (Variant 4)
     "005": 3,   # PVK
     "00A": 6,   # TAK / ZAK
     "00B": 8,   # DEK
@@ -33,13 +35,13 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
     - 'U' / 'X': 33 characters (1 scheme + 32 hex) or 17 characters if single-length
     - 'T' / 'Y': 49 characters (1 scheme + 48 hex)
     - 'Z' / 'D' / 'E' / 'A': 17 characters (1 scheme + 16 hex)
-    - 'S': TR-31 Key Block (dynamic total length parsed from header indices 1:5)
+    - 'S' / 'R': TR-31 / Thales Key Block (dynamic total length parsed from header indices 1:5)
     Returns (extracted_key_str, remaining_str).
     """
     if not data_str:
         raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Empty key data string")
     scheme = data_str[0].upper()
-    if scheme in ("U", "X"):
+    if scheme in ("U", "X", "M"):
         target_len = 33
     elif scheme in ("T", "Y"):
         target_len = 49
@@ -49,7 +51,7 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
         target_len = 49 if len(data_str) >= 49 else (33 if len(data_str) >= 33 else 17)
     elif scheme == "Z":
         target_len = 17
-    elif scheme == "S":
+    elif scheme in ("S", "R"):
         if len(data_str) < 16:
             raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "TR-31 header too short")
         length_str = data_str[1:5]
@@ -89,7 +91,7 @@ class A0Handler(BaseCommandHandler):
         """
         A0 Generate Key Handler.
         Payload format:
-        [Mode: 1 char ('0'=LMK, '1'=ZMK)] + [KeyType: 3 chars] + [KeyScheme: 1 char ('U','T','S','X','Y')]
+        [Mode: 1 char ('0'=LMK, '1'=ZMK)] + [KeyType: 3 chars] + [KeyScheme: 1 char ('U','T','S','X','Y','M')]
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 5:
@@ -99,31 +101,102 @@ class A0Handler(BaseCommandHandler):
         key_type = payload_str[1:4]
         key_scheme = payload_str[4].upper()
 
-        if key_type not in KEY_TYPE_VARIANTS:
+        if key_type not in KEY_TYPE_VARIANTS and key_type != "FFF":
             raise PayShieldException(ErrorCodes.INVALID_KEY_TYPE, f"Invalid key type: '{key_type}'")
 
-        if key_scheme not in ("U", "T", "S", "X", "Y"):
+        if key_scheme not in ("U", "T", "S", "X", "Y", "M", "R"):
             raise PayShieldException(ErrorCodes.INVALID_KEY_SCHEME, f"Unsupported key scheme: '{key_scheme}'")
 
         variant = KEY_TYPE_VARIANTS.get(key_type, 0)
         if key_type in ("002", "003", "TPK", "TMK"):
             self.hsm.lmk_engine.validate_pci_key_separation(key_type, variant)
 
-        # Generate key bytes (16 bytes for U/X/S, 24 bytes for T/Y)
-        key_len = 24 if key_scheme in ("T", "Y") else 16
+        rem_spec = payload_str[5:]
+        if rem_spec.startswith(";"):
+            rem_spec = rem_spec[1:]
+
+        default_usage = "D0" if key_type in ("008", "00B") else "21" if key_type in ("001", "002") else "C0" if key_type == "000" else "52" if key_type == "402" else "00"
+        algorithm = "T"
+        mode_of_use = "B"
+        key_version = "00"
+        exportability = "E" if mode == "1" else "N"
+
+        export_scheme = key_scheme
+        zmk_str = ""
+        rem_after_zmk = ""
+
+        if mode == "1":
+            rem = rem_spec
+            if rem and rem[0] in ("0", "1"):  # optional ZMK flag
+                rem = rem[1:]
+
+            if not rem:
+                raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Missing ZMK for mode 1")
+
+            zmk_str, rem_after_zmk = _extract_key_string(rem)
+            if rem_after_zmk:
+                export_scheme = rem_after_zmk[0].upper()
+                if "#" in rem_after_zmk:
+                    spec_source = rem_after_zmk.split("#", 1)[1]
+                elif len(rem_after_zmk) >= 4 and rem_after_zmk[1:3].isalnum():
+                    spec_source = rem_after_zmk[1:]
+                else:
+                    spec_source = ""
+            else:
+                spec_source = ""
+        else:
+            if "#" in rem_spec:
+                spec_source = rem_spec.split("#", 1)[1]
+            elif len(rem_spec) >= 3 and rem_spec[0:2].isalnum() and rem_spec[2].upper() in ("A", "T", "D", "R", "1", "2", "3"):
+                spec_source = rem_spec
+            else:
+                spec_source = ""
+
+        if spec_source and len(spec_source) >= 2 and spec_source[0:2].isalnum():
+            default_usage = spec_source[0:2].upper()
+            idx = 2
+            if len(spec_source) >= 4 and spec_source[2:4].upper() in ("A1", "A2", "A3", "T2", "T3"):
+                algorithm = spec_source[2:4].upper()
+                idx = 4
+            elif len(spec_source) >= 3 and spec_source[2].upper() in ("A", "T", "D", "R"):
+                algorithm = spec_source[2].upper()
+                idx = 3
+
+            if len(spec_source) >= idx + 1:
+                mode_of_use = spec_source[idx].upper()
+            if len(spec_source) >= idx + 3:
+                key_version = spec_source[idx+1:idx+3].upper()
+            if len(spec_source) >= idx + 4:
+                exportability = spec_source[idx+3].upper()
+
+        # Determine raw key length and TR31Header algorithm ('A' or 'T')
+        if algorithm == "A3":
+            key_len = 32
+            hdr_algorithm = "A"
+        elif algorithm == "A2":
+            key_len = 24
+            hdr_algorithm = "A"
+        elif algorithm in ("A1", "A"):
+            key_len = 16
+            hdr_algorithm = "A"
+        elif key_scheme in ("T", "Y") or algorithm in ("T2", "T3"):
+            key_len = 24
+            hdr_algorithm = "T"
+        else:
+            key_len = 16
+            hdr_algorithm = "T"
+
         raw_key = os.urandom(key_len)
 
-        if key_scheme == "S":
-            # TR-31 Key Block Generation under LMK
-            default_usage = "21" if key_type in ("001", "002") else "C0" if key_type == "000" else "52" if key_type == "402" else "00"
+        if key_scheme in ("S", "R"):
             hdr = TR31Header(
-                version_id="S",
+                version_id=key_scheme,
                 key_length=80,
                 key_usage=default_usage,
-                algorithm="T",
-                mode_of_use="B",
-                key_version="00",
-                exportability="E"
+                algorithm=hdr_algorithm,
+                mode_of_use=mode_of_use,
+                key_version=key_version,
+                exportability=exportability
             )
             # Wrap under LMK
             key_block = TR31KeyBlock.wrap(raw_key, hdr, self.hsm.LMK)
@@ -132,48 +205,45 @@ class A0Handler(BaseCommandHandler):
             enc_key_bytes = self.hsm.lmk_engine.encrypt_under_lmk(raw_key, variant)
             key_lmk_hex = key_scheme.encode("ascii") + hexlify(enc_key_bytes).upper()
 
-        kcv = LMKEngine.generate_kcv(raw_key).encode("ascii")
+        kcv = LMKEngine.generate_kcv(raw_key, algorithm=algorithm).encode("ascii")
 
         if mode == "0":
             return ErrorCodes.SUCCESS, key_lmk_hex + kcv
         elif mode == "1":
-            # Mode 1 requires ZMK under LMK
-            rem = payload_str[5:]
-            if rem.startswith(";"):
-                rem = rem[1:]
-            if rem and rem[0] in ("0", "1"):  # optional ZMK flag
-                rem = rem[1:]
-
-            if not rem:
-                raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Missing ZMK for mode 1")
-
-            zmk_str, _ = _extract_key_string(rem)
-            if zmk_str.startswith("S"):
+            if zmk_str.startswith("S") or zmk_str.startswith("R"):
                 _, zmk_raw = TR31KeyBlock.unwrap(zmk_str, self.hsm.LMK)
             else:
                 zmk_scheme, zmk_enc_bytes = _parse_key_payload(zmk_str)
                 zmk_raw = self.hsm.lmk_engine.decrypt_under_lmk(zmk_enc_bytes, variant=KEY_TYPE_VARIANTS["000"])
 
-            if key_scheme == "S":
-                default_usage = "21" if key_type in ("001", "002") else "C0" if key_type == "000" else "52" if key_type == "402" else "00"
+            if export_scheme in ("S", "R"):
+                hdr_zmk_alg = "A" if algorithm.startswith("A") else "T"
                 hdr_zmk = TR31Header(
-                    version_id="S",
+                    version_id=export_scheme,
                     key_length=80,
                     key_usage=default_usage,
-                    algorithm="T",
-                    mode_of_use="B",
-                    key_version="00",
-                    exportability="E"
+                    algorithm=hdr_zmk_alg,
+                    mode_of_use=mode_of_use,
+                    key_version=key_version,
+                    exportability=exportability
                 )
                 key_zmk_hex = TR31KeyBlock.wrap(raw_key, hdr_zmk, zmk_raw)
             else:
-                zmk_cipher = Crypto.Cipher.DES3.new(zmk_raw, Crypto.Cipher.DES3.MODE_ECB)
-                enc_key_zmk = zmk_cipher.encrypt(raw_key)
-                key_zmk_hex = key_scheme.encode("ascii") + hexlify(enc_key_zmk).upper()
+                if algorithm.startswith("A"):
+                    zmk_key = zmk_raw[:32] if len(zmk_raw) >= 32 else (zmk_raw[:24] if len(zmk_raw) >= 24 else zmk_raw[:16])
+                    aes_cipher = Crypto.Cipher.AES.new(zmk_key, Crypto.Cipher.AES.MODE_ECB)
+                    enc_key_zmk = aes_cipher.encrypt(raw_key)
+                else:
+                    zmk_cipher = Crypto.Cipher.DES3.new(zmk_raw[:16] if len(zmk_raw) == 16 else zmk_raw[:24], Crypto.Cipher.DES3.MODE_ECB)
+                    enc_key_zmk = zmk_cipher.encrypt(raw_key)
+                key_zmk_hex = export_scheme.encode("ascii") + hexlify(enc_key_zmk).upper()
 
             return ErrorCodes.SUCCESS, key_lmk_hex + key_zmk_hex + kcv
         else:
             raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, f"Invalid mode '{mode}'")
+
+
+
 
 
 @global_router.register("BU")

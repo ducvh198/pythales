@@ -135,13 +135,19 @@ if __name__ == '__main__':
     print(
         f"Starting PyThales AsyncHSMServer (max_connections={max_connections}, idle_timeout={idle_timeout}s, keepalive={enable_keepalive})..."
     )
-    hsm.start_server(
-        host=host,
-        port=port,
-        max_connections=max_connections,
-        idle_timeout=idle_timeout,
-        enable_keepalive=enable_keepalive,
-        background=False,
-    )
+    try:
+        hsm.start_server(
+            host=host,
+            port=port,
+            max_connections=max_connections,
+            idle_timeout=idle_timeout,
+            enable_keepalive=enable_keepalive,
+            background=False,
+        )
+    except OSError as e:
+        print(f"Error starting server on {host}:{port if port else 1500}: {e}")
+        print("Please check if another process is already listening on this port.")
+        sys.exit(1)
+
 
 

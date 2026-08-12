@@ -6,8 +6,11 @@ from binascii import hexlify, unhexlify
 from typing import Union, Optional
 import Crypto.Cipher.DES
 import Crypto.Cipher.DES3
+import Crypto.Cipher.AES
+from Crypto.Hash import CMAC
 import pythales.compat
 from pythales.core.errors import PayShieldException, ErrorCodes
+
 
 # 64-bit XOR variant masks applied to LMK halves
 VARIANT_MASKS = {
@@ -123,11 +126,26 @@ class LMKEngine:
         return True
 
     @staticmethod
-    def generate_kcv(key_bytes: bytes) -> str:
+    def generate_kcv(key_bytes: bytes, algorithm: str = "T") -> str:
         """
-        Generate 6-character hex Key Check Value (KCV) by encrypting 8 zero bytes.
+        Generate 6-character hex Key Check Value (KCV).
+        - For 3DES (algorithm 'T'): Encrypt 8 zero bytes using DES3 ECB and take first 3 bytes hex.
+        - For AES (algorithm 'A', 'A1', 'A2', 'A3'): AES-CMAC on 16 zero bytes and take first 3 bytes hex.
         """
-        cipher = Crypto.Cipher.DES3.new(key_bytes, Crypto.Cipher.DES3.MODE_ECB)
-        encrypted_zeros = cipher.encrypt(b"\x00" * 8)
-        return hexlify(encrypted_zeros[:3]).decode("ascii").upper()
+        if algorithm.upper().startswith("A") or len(key_bytes) == 32:
+            try:
+                c_obj = CMAC.new(key_bytes, ciphermod=Crypto.Cipher.AES)
+                c_obj.update(b"\x00" * 16)
+                cmac_bytes = c_obj.digest()
+                return hexlify(cmac_bytes[:3]).decode("ascii").upper()
+            except Exception:
+                cipher = Crypto.Cipher.AES.new(key_bytes, Crypto.Cipher.AES.MODE_ECB)
+                enc_zeros = cipher.encrypt(b"\x00" * 16)
+                return hexlify(enc_zeros[:3]).decode("ascii").upper()
+        else:
+            cipher = Crypto.Cipher.DES3.new(key_bytes, Crypto.Cipher.DES3.MODE_ECB)
+            encrypted_zeros = cipher.encrypt(b"\x00" * 8)
+            return hexlify(encrypted_zeros[:3]).decode("ascii").upper()
+
+
 
