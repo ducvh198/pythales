@@ -215,6 +215,9 @@ The HSM server supports full configuration via environment variables (in `.env`,
 | `HSM_DEBUG` | `false` | Enable verbose debug logging (`1`/`0`, `true`/`false`) |
 | `HSM_SKIP_PARITY` | `false` | Skip key parity checking (`1`/`0`, `true`/`false`) |
 | `HSM_APPROVE_ALL` | `false` | Force approval of all incoming requests (`1`/`0`, `true`/`false`) |
+| `HSM_MAX_CONNECTIONS` | `1000` | Maximum allowed concurrent TCP client connections |
+| `HSM_IDLE_TIMEOUT` | `30.0` | Idle connection timeout in seconds before closing socket |
+| `HSM_ENABLE_KEEPALIVE` | `true` | Enable TCP Keep-Alive on client sockets (`true`/`false`) |
 
 ---
 

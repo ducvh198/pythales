@@ -3,6 +3,8 @@ import sys
 import socket
 import struct
 import os
+import asyncio
+from typing import Optional, Union, Tuple, Any
 
 from tracetools.tracetools import trace
 from collections import OrderedDict
@@ -12,13 +14,16 @@ from binascii import hexlify, unhexlify
 from pynblock.tools import str2bytes, raw2str, raw2B, B2raw, xor, get_visa_pvv, get_visa_cvv, get_digits_from_string, key_CV, get_clear_pin, check_key_parity, modify_key_parity
 
 from pythales.crypto.lmk import LMKEngine
-from pythales.core.frame import MessageFraming, CommandFrame
+from pythales.core.frame import MessageFraming, CommandFrame, ResponseFrame
 from pythales.core.router import global_router, CommandRouter
 from pythales.core.errors import ErrorCodes, PayShieldException
 import pythales.commands.diagnostics
 import pythales.commands.key_mgmt
 import pythales.commands.card_verify
 import pythales.commands.mac_data
+import pythales.commands.pin
+import pythales.commands.emv
+
 
 
 
@@ -470,7 +475,13 @@ def parse_message(data=None, header=None):
 class HSM():
     def __init__(self, header=None, key=None, debug=None, skip_parity=None, port=None, approve_all=None):
         self.firmware_version = '0007-E000'        
-        self.header = str2bytes(header) if header else b''
+        if isinstance(header, str):
+            self.header = header.encode("utf-8")
+        elif isinstance(header, bytes):
+            self.header = header
+        else:
+            self.header = b''
+
         self.LMK = unhexlify(key) if key else unhexlify('DEAFBEEDEAFBEEDEAFBEEDEAFBEEDEAF')
         self.lmk_engine = LMKEngine(self.LMK)
         self.cipher = DES3.new(self.LMK, DES3.MODE_ECB)
@@ -522,11 +533,14 @@ class HSM():
         kcv_bytes = self.lmk_engine.encrypt_under_lmk(b"\x00" * 8, variant=0)
         return hexlify(kcv_bytes).upper()
 
-    def process_raw_message(self, raw_data: bytes) -> bytes:
-        header_len = len(self.header) if self.header else 0
+    def process_raw_message(self, raw_data: bytes, header_length: Optional[int] = None) -> bytes:
+        if header_length is None:
+            header_len = len(self.header) if self.header else 0
+        else:
+            header_len = header_length
         frame = MessageFraming.parse_request(raw_data, header_length=header_len)
         
-        if self.header and frame.header_bytes and frame.header_bytes != self.header:
+        if self.header and frame.header_bytes and frame.header_bytes != self.header and len(self.header) == len(frame.header_bytes):
             return MessageFraming.format_response(
                 header_bytes=self.header,
                 response_code="ZZ",
@@ -534,7 +548,10 @@ class HSM():
             )
 
         try:
-            return global_router.dispatch(frame.command_code, self, frame)
+            res = global_router.dispatch(frame.command_code, self, frame)
+            if isinstance(res, ResponseFrame):
+                return res.build()
+            return res
         except PayShieldException as pe:
             cmd = frame.command_code
             resp_code = cmd[0] + chr(ord(cmd[1]) + 1) if len(cmd) == 2 else "ZZ"
@@ -954,3 +971,107 @@ class HSM():
             response.set_response_code('ZZ')
             response.set_error_code('00')
             return response
+
+
+class PyThalesHSM(HSM):
+    """
+    Enhanced PyThales HSM facade supporting standalone command execution
+    and async TCP server start/stop management.
+    """
+
+    def __init__(
+        self,
+        header=None,
+        key=None,
+        debug=None,
+        skip_parity=None,
+        port=None,
+        approve_all=None,
+    ):
+        super().__init__(
+            header=header,
+            key=key,
+            debug=debug,
+            skip_parity=skip_parity,
+            port=port,
+            approve_all=approve_all,
+        )
+        self._async_server = None
+        self._server_thread = None
+
+    def execute_command(
+        self, raw_data: bytes, header_length: Optional[int] = None
+    ) -> bytes:
+        """
+        Standalone command execution method.
+        Accepts raw request bytes (with or without 2-byte TCP prefix) and returns
+        the formatted response bytes WITH 2-byte TCP length prefix prepended.
+        """
+        body_data = raw_data
+        if len(raw_data) >= 2:
+            expected_len = struct.unpack("!H", raw_data[:2])[0]
+            if len(raw_data) == expected_len + 2:
+                body_data = raw_data[2:]
+
+        resp_body = self.process_raw_message(body_data, header_length=header_length)
+        return struct.pack("!H", len(resp_body)) + resp_body
+
+    def start_server(
+        self,
+        host: str = "127.0.0.1",
+        port: Optional[int] = None,
+        header_length: Optional[int] = None,
+        background: bool = True,
+        max_connections: Optional[int] = None,
+        idle_timeout: Optional[float] = None,
+        enable_keepalive: bool = True,
+    ):
+        """
+        Start the AsyncHSMServer for this HSM facade.
+        If background is True, runs the server in a separate background thread.
+        """
+        import threading
+        from pythales.server.async_server import AsyncHSMServer
+
+        target_port = port if port is not None else self.port
+        self._async_server = AsyncHSMServer(
+            host=host,
+            port=target_port,
+            header=self.header,
+            header_length=header_length,
+            hsm=self,
+            max_connections=max_connections,
+            idle_timeout=idle_timeout,
+            enable_keepalive=enable_keepalive,
+        )
+
+        if background:
+            def _run_loop():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(self._async_server.start())
+                loop.run_forever()
+
+            self._server_thread = threading.Thread(target=_run_loop, daemon=True)
+            self._server_thread.start()
+            import time
+            time.sleep(0.1)
+        else:
+            asyncio.run(self._async_server.serve_forever())
+
+    def stop_server(self):
+        """
+        Stop the background server if running.
+        """
+        if self._async_server is not None:
+            if self._async_server._server is not None:
+                loop = self._async_server._server.get_loop()
+                if loop and loop.is_running():
+                    asyncio.run_coroutine_threadsafe(self._async_server.stop(), loop)
+            self._async_server = None
+        self._server_thread = None
+
+    def is_server_running(self) -> bool:
+        """Return whether server is active."""
+        return self._async_server is not None and self._async_server.is_running
+

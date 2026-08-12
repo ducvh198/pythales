@@ -4,7 +4,7 @@ Base Command Handler abstract class.
 
 from abc import ABC, abstractmethod
 from typing import Tuple
-from pythales.core.frame import CommandFrame, MessageFraming
+from pythales.core.frame import CommandFrame, MessageFraming, ResponseFrame
 from pythales.core.errors import ErrorCodes, PayShieldException
 
 
@@ -21,7 +21,7 @@ class BaseCommandHandler(ABC):
         """
         pass
 
-    def handle(self, request_frame: CommandFrame) -> bytes:
+    def handle(self, request_frame: CommandFrame) -> ResponseFrame:
         response_code = self.get_response_code(request_frame.command_code)
         try:
             error_code, resp_payload = self.handle_payload(request_frame.payload_bytes)
@@ -32,7 +32,7 @@ class BaseCommandHandler(ABC):
             error_code = ErrorCodes.FUNCTION_NOT_SUPPORTED
             resp_payload = b""
 
-        return MessageFraming.format_response(
+        return ResponseFrame(
             header_bytes=request_frame.header_bytes,
             response_code=response_code,
             error_code=error_code,
