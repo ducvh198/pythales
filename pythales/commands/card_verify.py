@@ -78,7 +78,7 @@ class CWHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 17:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "CW payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "CW payload too short")
 
         cvk_str, rem = _extract_key_string(payload_str)
         rem = rem.lstrip(";").rstrip("?")
@@ -129,7 +129,7 @@ class CYHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 17:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "CY payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "CY payload too short")
 
         cvk_str, rem = _extract_key_string(payload_str)
         rem = rem.rstrip("?")

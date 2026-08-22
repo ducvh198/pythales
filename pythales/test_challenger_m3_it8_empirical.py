@@ -132,7 +132,7 @@ def test_scheme_z_dc_pin_verify(hsm, z_keys):
     pin = "1234"
     pvki = "1"
 
-    from pynblock.tools import get_visa_pvv
+    from pythales.crypto.tools import get_visa_pvv
     pvk_hex = hexlify(z_keys["raw_pvk_16"]).decode("ascii").upper()
     calc_pvv = get_visa_pvv(pan.encode(), pvki.encode(), pin.encode(), pvk_hex.encode()).decode("ascii")
 

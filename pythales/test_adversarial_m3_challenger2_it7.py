@@ -6,7 +6,7 @@ Challenger 2 - Iteration 7
 import pytest
 from binascii import hexlify, unhexlify
 import Crypto.Cipher.DES3
-from pynblock.tools import get_visa_pvv
+from pythales.crypto.tools import get_visa_pvv
 
 from pythales.hsm import HSM
 from pythales.core.errors import ErrorCodes, PayShieldException

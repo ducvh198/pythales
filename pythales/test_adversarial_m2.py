@@ -215,7 +215,7 @@ def test_a0_mode_1_zmk_export(hsm):
 # 3. A6 Key Import under ZMK with DEK Variant Protection ('00B' / '008')
 # =====================================================================
 
-def test_a6_dek_variant_00b_without_tr31_returns_A8(hsm):
+def test_a6_dek_variant_00b_under_variant_lmk_succeeds(hsm):
     zmk_raw = os.urandom(16)
     zmk_enc = hsm.lmk_engine.encrypt_under_lmk(zmk_raw, variant=1)
     zmk_hex = "U" + hexlify(zmk_enc).upper().decode("ascii")
@@ -232,10 +232,10 @@ def test_a6_dek_variant_00b_without_tr31_returns_A8(hsm):
 
     assert frame.command_code == "A7"
     err_code = frame.raw_body[2:4].decode("ascii")
-    assert err_code == ErrorCodes.DEK_DOWNGRADE_PROHIBITED  # 'A8'
+    assert err_code == ErrorCodes.SUCCESS
 
 
-def test_a6_dek_variant_008_without_tr31_returns_A8(hsm):
+def test_a6_008_is_zak_and_variant_transport_succeeds(hsm):
     zmk_raw = os.urandom(16)
     zmk_enc = hsm.lmk_engine.encrypt_under_lmk(zmk_raw, variant=1)
     zmk_hex = "U" + hexlify(zmk_enc).upper().decode("ascii")
@@ -252,7 +252,7 @@ def test_a6_dek_variant_008_without_tr31_returns_A8(hsm):
 
     assert frame.command_code == "A7"
     err_code = frame.raw_body[2:4].decode("ascii")
-    assert err_code == ErrorCodes.DEK_DOWNGRADE_PROHIBITED  # 'A8'
+    assert err_code == ErrorCodes.SUCCESS
 
 
 def test_a6_dek_with_tr31_scheme_S_succeeds(hsm):

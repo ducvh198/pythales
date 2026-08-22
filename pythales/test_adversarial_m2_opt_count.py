@@ -24,7 +24,7 @@ OPT_TAG_PREFIXES = [
 ]
 
 ALGORITHMS = ["T", "A"]
-VERSION_IDS = ["S", "B", "A", "D", "1", "U", "T", "X", "Y"]
+VERSION_IDS = ["A", "B", "C", "D"]
 KEY_USAGES = ["00", "21", "52", "71", "C0", "P0", "M0", "D0", "E0", "V0"]
 MODES_OF_USE = ["B", "E", "D", "C", "V", "N"]
 EXPORTABILITIES = ["E", "N", "S"]
@@ -43,12 +43,18 @@ def test_tr31_500_random_opt_count_zero_wrap_unwrap():
         mode = random.choice(MODES_OF_USE)
         exp = random.choice(EXPORTABILITIES)
 
-        # KBMK size: 16 or 24 for 3DES, 16 or 32 for AES
-        if alg == "T":
+        # TR-31 binding algorithm is selected by Version ID, independently
+        # from the algorithm of the key carried inside the block.
+        if ver == "D":
+            kbmk_len = random.choice([16, 24, 32])
+        elif ver == "B":
             kbmk_len = random.choice([16, 24])
+        else:  # A/C variant binding permits single/double/triple DES KBPKs.
+            kbmk_len = random.choice([8, 16, 24])
+
+        if alg == "T":
             clear_key_len = random.choice([16, 24])
         else:
-            kbmk_len = random.choice([16, 32])
             clear_key_len = random.choice([16, 24, 32])
 
         kbmk = os.urandom(kbmk_len)

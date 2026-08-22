@@ -82,47 +82,22 @@ class LMKEngine:
 
     def validate_pci_key_separation(self, key_type: Union[str, bytes], variant: Union[int, str], pci_mode: Optional[bool] = None) -> bool:
         """
-        Enforce PCI HSM key separation rule:
-        TPK/TMK LMK Pair 36-37 MUST use Variant 7 or 8.
-        If pci_mode is enabled and generic variant 2 (or non-7/8 variant) is used for TPK/TMK,
-        raise PayShieldException with PCI_KEY_SEPARATION_VIOLATION ('A7').
+        Deprecated compatibility hook.
+
+        The Core Guide defines A7 as "Invalid algorithm"; it does not define
+        A7 as a generic PCI key-separation policy error.  Command handlers must
+        validate the concrete key type and security setting instead.
         """
-        enforce = self.pci_mode if pci_mode is None else pci_mode
-        if not enforce:
-            return True
-
-        kt_str = key_type.decode("ascii", errors="ignore").upper() if isinstance(key_type, bytes) else str(key_type).upper()
-        var_num = int(variant) if not isinstance(variant, int) else variant
-
-        if kt_str in ("002", "003", "TPK", "TMK", "PAIR36_37", "000"):
-            if var_num in (1, 2) and var_num not in (7, 8):
-                raise PayShieldException(
-                    ErrorCodes.PCI_KEY_SEPARATION_VIOLATION,
-                    f"PCI HSM Policy Violation: Key Type {kt_str} requires LMK Pair 36-37 (Variant 7/8), got Variant {var_num}"
-                )
         return True
 
     def validate_dek_protection(self, key_type: Union[str, bytes], variant: Union[int, str], export_scheme: Optional[str] = None) -> bool:
         """
-        Enforce DEK Variant 8 protection / no-downgrade rule support:
-        1. DEK (Key Type 008) MUST use Variant 8 when encrypted under LMK.
-        2. DEK cannot be exported under cleartext or legacy un-versioned variant schemes ('U', 'X') without Key Block wrapping.
-        Raises PayShieldException with DEK_DOWNGRADE_PROHIBITED ('A8').
-        """
-        kt_str = key_type.decode("ascii", errors="ignore").upper() if isinstance(key_type, bytes) else str(key_type).upper()
-        var_num = int(variant) if not isinstance(variant, int) else variant
+        Deprecated compatibility hook.
 
-        if kt_str in ("008", "DEK"):
-            if var_num != 8 and var_num != 0:
-                raise PayShieldException(
-                    ErrorCodes.DEK_DOWNGRADE_PROHIBITED,
-                    f"DEK Protection Rule Violation: DEK must use LMK Variant 8, got Variant {var_num}"
-                )
-            if export_scheme in ("U", "X", "CLEAR", "LEGACY"):
-                raise PayShieldException(
-                    ErrorCodes.DEK_DOWNGRADE_PROHIBITED,
-                    f"DEK Protection Rule Violation: DEK downgrade to scheme '{export_scheme}' is prohibited. Must use Key Block."
-                )
+        008 is a ZAK, not a DEK, and A8 means "Invalid mode of use".  The A6
+        DEK transport restriction is conditional on Key Block LMK operation,
+        so it cannot be enforced from this LMK-variant helper.
+        """
         return True
 
     @staticmethod
@@ -146,6 +121,5 @@ class LMKEngine:
             cipher = Crypto.Cipher.DES3.new(key_bytes, Crypto.Cipher.DES3.MODE_ECB)
             encrypted_zeros = cipher.encrypt(b"\x00" * 8)
             return hexlify(encrypted_zeros[:3]).decode("ascii").upper()
-
 
 

@@ -161,7 +161,7 @@ def test_dc_format4_pin_block_verification(hsm, keys):
     pan = "4000123456789010"
     pvki = "1"
 
-    from pynblock.tools import get_visa_pvv
+    from pythales.crypto.tools import get_visa_pvv
     pvk_hex = hexlify(keys["raw_pvk"]).decode("ascii").upper()
     calc_pvv = get_visa_pvv(pan.encode(), pvki.encode(), pin.encode(), pvk_hex.encode()).decode("ascii")
 
@@ -287,7 +287,7 @@ def test_pan_length_boundaries_12_and_19_digits(hsm, keys):
         assert err_cy == ErrorCodes.SUCCESS
 
         # DC
-        from pynblock.tools import get_visa_pvv
+        from pythales.crypto.tools import get_visa_pvv
         pvk_hex = hexlify(keys["raw_pvk"]).decode("ascii").upper()
         pvki = "1"
         calc_pvv = get_visa_pvv(pan.encode(), pvki.encode(), pin.encode(), pvk_hex.encode()).decode("ascii")

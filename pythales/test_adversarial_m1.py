@@ -26,16 +26,16 @@ class TestAdversarialFraming(unittest.TestCase):
     def test_tcp_2byte_header_zero_length_bytes(self):
         # Boundary test: 2-byte prefix with len 0
         raw_msg = b"\x00\x00"
-        frame = MessageFraming.parse_request(raw_msg)
-        self.assertEqual(frame.command_code, "")
-        self.assertEqual(frame.payload_bytes, b"")
+        with self.assertRaises(PayShieldException) as cm:
+            MessageFraming.parse_request(raw_msg)
+        self.assertEqual(cm.exception.error_code, ErrorCodes.INVALID_INPUT_DATA)
 
     def test_tcp_2byte_header_single_byte(self):
         # Single byte raw data
         raw_msg = b"A"
-        frame = MessageFraming.parse_request(raw_msg)
-        self.assertEqual(frame.command_code, "A")
-        self.assertEqual(frame.payload_bytes, b"")
+        with self.assertRaises(PayShieldException) as cm:
+            MessageFraming.parse_request(raw_msg)
+        self.assertEqual(cm.exception.error_code, ErrorCodes.INVALID_INPUT_DATA)
 
     def test_tcp_length_prefix_matching(self):
         # Length prefix \x00\x05 matching "NC123" (5 bytes)
@@ -47,13 +47,12 @@ class TestAdversarialFraming(unittest.TestCase):
     def test_malformed_headers(self):
         # Header length specified larger than actual data length
         raw_msg = b"HDR"
-        frame = MessageFraming.parse_request(raw_msg, header_length=10)
-        self.assertEqual(frame.header_bytes, b"")
-        self.assertEqual(frame.command_code, "HD")
-        self.assertEqual(frame.payload_bytes, b"R")
+        with self.assertRaises(PayShieldException) as cm:
+            MessageFraming.parse_request(raw_msg, header_length=10)
+        self.assertEqual(cm.exception.error_code, ErrorCodes.INVALID_INPUT_DATA)
 
-    def test_error_code_truncation_rule_strict(self):
-        # Test error truncation for various error codes and payload contents
+    def test_error_payload_is_preserved_by_framing(self):
+        # Framing is transport-only. Some command errors carry diagnostics.
         error_codes_to_test = ["01", "02", "03", "10", "15", "21", "29", "80", "A6", "A7", "A8", "BC"]
         dirty_payload = b"SENSITIVE_DATA_FIELD_1234567890_SHOULD_NEVER_BE_SENT"
 
@@ -65,8 +64,8 @@ class TestAdversarialFraming(unittest.TestCase):
                 error_code=err_code,
                 payload_bytes=dirty_payload
             )
-            self.assertEqual(resp, b"HDRND" + err_code.encode("ascii"))
-            self.assertNotIn(dirty_payload, resp)
+            expected_body = b"HDRND" + err_code.encode("ascii") + dirty_payload
+            self.assertEqual(resp, expected_body)
 
             # Test bytes error code
             resp_bytes_err = MessageFraming.format_response(
@@ -75,8 +74,7 @@ class TestAdversarialFraming(unittest.TestCase):
                 error_code=err_code.encode("ascii"),
                 payload_bytes=dirty_payload
             )
-            self.assertEqual(resp_bytes_err, b"HDRND" + err_code.encode("ascii"))
-            self.assertNotIn(dirty_payload, resp_bytes_err)
+            self.assertEqual(resp_bytes_err, expected_body)
 
             # Test with length prefix
             resp_prefixed = MessageFraming.format_response(
@@ -86,7 +84,6 @@ class TestAdversarialFraming(unittest.TestCase):
                 payload_bytes=dirty_payload,
                 include_length_prefix=True
             )
-            expected_body = b"HDRND" + err_code.encode("ascii")
             expected_prefix = struct.pack("!H", len(expected_body))
             self.assertEqual(resp_prefixed, expected_prefix + expected_body)
 
@@ -229,50 +226,15 @@ class TestAdversarialLMKEngine(unittest.TestCase):
             eng.get_variant_lmk("INVALID_VAR")
         self.assertEqual(cm.exception.error_code, ErrorCodes.INVALID_KEY_SCHEME)
 
-    def test_pci_key_separation_violation_scenarios(self):
+    def test_legacy_pci_policy_hook_does_not_invent_a7_errors(self):
         eng = LMKEngine(self.BASE_16_LMK, pci_mode=True)
-        prohibited_key_types = ["002", "TPK", "TMK", "PAIR36_37", "000"]
+        self.assertTrue(eng.validate_pci_key_separation("002", variant=2))
+        self.assertEqual(ErrorCodes.INVALID_ALGORITHM, "A7")
 
-        for kt in prohibited_key_types:
-            for var in [1, 2]:  # Variants 1 & 2 prohibited for TPK/TMK in PCI mode
-                with self.assertRaises(PayShieldException, msg=f"Failed for kt={kt}, var={var}") as cm:
-                    eng.validate_pci_key_separation(kt, variant=var)
-                self.assertEqual(cm.exception.error_code, ErrorCodes.PCI_KEY_SEPARATION_VIOLATION)
-
-            # Variant 7 and 8 must be allowed
-            self.assertTrue(eng.validate_pci_key_separation(kt, variant=7))
-            self.assertTrue(eng.validate_pci_key_separation(kt, variant=8))
-
-            # When pci_mode=False, should allow any variant
-            self.assertTrue(eng.validate_pci_key_separation(kt, variant=2, pci_mode=False))
-
-        # Other key types (e.g. ZPK '001', CVK '003') should pass with variant 2
-        self.assertTrue(eng.validate_pci_key_separation("001", variant=2))
-        self.assertTrue(eng.validate_pci_key_separation("ZPK", variant=2))
-
-    def test_dek_protection_violation_scenarios(self):
+    def test_legacy_dek_policy_hook_does_not_treat_008_as_dek(self):
         eng = LMKEngine(self.BASE_16_LMK)
-        dek_types = ["008", "DEK", b"008"]
-
-        for kt in dek_types:
-            # Prohibited LMK variants for DEK (anything other than 8 and 0)
-            for bad_var in [1, 2, 3, 4, 5, 6, 7, 9]:
-                with self.assertRaises(PayShieldException, msg=f"Failed for kt={kt}, var={bad_var}") as cm:
-                    eng.validate_dek_protection(kt, variant=bad_var)
-                self.assertEqual(cm.exception.error_code, ErrorCodes.DEK_DOWNGRADE_PROHIBITED)
-
-            # Allowed variants
-            self.assertTrue(eng.validate_dek_protection(kt, variant=8))
-            self.assertTrue(eng.validate_dek_protection(kt, variant=0))
-
-            # Prohibited export schemes
-            for bad_scheme in ["U", "X", "CLEAR", "LEGACY"]:
-                with self.assertRaises(PayShieldException, msg=f"Failed for kt={kt}, scheme={bad_scheme}") as cm:
-                    eng.validate_dek_protection(kt, variant=8, export_scheme=bad_scheme)
-                self.assertEqual(cm.exception.error_code, ErrorCodes.DEK_DOWNGRADE_PROHIBITED)
-
-            # Allowed export scheme (e.g. TR-31 block scheme 'S')
-            self.assertTrue(eng.validate_dek_protection(kt, variant=8, export_scheme="S"))
+        self.assertTrue(eng.validate_dek_protection("008", variant=1, export_scheme="U"))
+        self.assertEqual(ErrorCodes.INVALID_MODE_OF_USE, "A8")
 
     def test_kcv_generation(self):
         key_16 = b"\x01" * 16

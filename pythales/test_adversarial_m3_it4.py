@@ -166,7 +166,7 @@ def test_challenge_dc_track2_with_equals(hsm, keys):
     pan = "4000123456789010"
     pvki = "1"
 
-    from pynblock.tools import get_visa_pvv
+    from pythales.crypto.tools import get_visa_pvv
     pvk_hex = hexlify(keys["raw_pvk"]).decode("ascii").upper()
     calc_pvv = get_visa_pvv(pan.encode(), pvki.encode(), pin.encode(), pvk_hex.encode()).decode("ascii")
 
@@ -261,7 +261,7 @@ def test_challenge_dc_single_length_pvk(hsm, keys):
     pvk_enc = hsm.lmk_engine.encrypt_under_lmk(raw_single_pvk, variant=3)
     single_pvk_str = "Z" + hexlify(pvk_enc).decode("ascii").upper()
 
-    from pynblock.tools import get_visa_pvv
+    from pythales.crypto.tools import get_visa_pvv
     pvk_hex = (hexlify(raw_single_pvk) * 2).decode("ascii").upper()
     calc_pvv = get_visa_pvv(pan.encode(), pvki.encode(), pin.encode(), pvk_hex.encode()).decode("ascii")
 

@@ -28,9 +28,12 @@ class BaseCommandHandler(ABC):
         except PayShieldException as pe:
             error_code = pe.error_code
             resp_payload = b""
-        except Exception as e:
-            error_code = ErrorCodes.FUNCTION_NOT_SUPPORTED
+        except Exception:
+            error_code = ErrorCodes.INTERNAL_HARDWARE_ERROR
             resp_payload = b""
+
+        if request_frame.delimiter_present:
+            resp_payload += b"\x19" + request_frame.trailer_bytes
 
         return ResponseFrame(
             header_bytes=request_frame.header_bytes,

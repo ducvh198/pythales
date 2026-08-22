@@ -4,7 +4,7 @@ import Crypto.Cipher.DES3
 def patch_pycryptodome():
     """
     Patch PyCryptodome to maintain backward compatibility with legacy PyCrypto behavior
-    used by pythales and pynblock.
+    used by the legacy pythales implementation.
     """
     # 1. Default mode for DES.new to MODE_ECB if omitted (pynblock/tools.py omits mode)
     try:

@@ -206,7 +206,7 @@ def test_a6_import_under_tr31_zmk(hsm):
     assert dec_zpk == zpk_raw
 
 
-def test_a6_target_scheme_E_triple_length_expansion(hsm):
+def test_a6_rejects_transport_only_target_scheme_E(hsm):
     # Generate ZMK under LMK (scheme U)
     zmk_req = make_request(b"A0", b"0000U")
     zmk_resp = hsm.process_raw_message(zmk_req)
@@ -226,15 +226,7 @@ def test_a6_target_scheme_E_triple_length_expansion(hsm):
     a6_frame = MessageFraming.parse_request(a6_resp, header_length=4)
 
     assert a6_frame.command_code == "A7"
-    assert a6_frame.raw_body[2:4].decode("ascii") == ErrorCodes.SUCCESS
-    res_str = a6_frame.raw_body[4:].decode("ascii")
-    key_e = res_str[:49]  # 1 scheme + 48 hex = 49 chars
-    kcv = res_str[49:55]
-
-    expected_24 = zpk_16 + zpk_16[:8]
-    assert kcv == LMKEngine.generate_kcv(expected_24)
-    dec_24 = hsm.lmk_engine.decrypt_under_lmk(unhexlify(key_e[1:]), variant=2)
-    assert dec_24 == expected_24
+    assert a6_frame.raw_body[2:4].decode("ascii") == ErrorCodes.INVALID_KEY_SCHEME
 
 
 def test_gi_roundtrip_all_key_types(hsm):
@@ -305,7 +297,7 @@ def test_framing_error_truncation_rule(hsm):
 
     # Frame header must be b"1234" and raw_body must be response code (A1) + error code (02) = 4 bytes
     assert frame.header_bytes == b"1234"
-    assert frame.raw_body == b"A102"
+    assert frame.raw_body == b"A104"
     # Response Data post Error Code must be empty (truncated)
     assert frame.raw_body[4:] == b""
 
@@ -314,7 +306,6 @@ def test_framing_error_truncation_all_error_codes(hsm):
     error_payloads = [
         (b"A0", b"0999U", b"A1", ErrorCodes.INVALID_KEY_TYPE),
         (b"A0", b"0000Z", b"A1", ErrorCodes.INVALID_KEY_SCHEME),
-        (b"A6", b"00B" + b"U" + b"1"*32 + b"U" + b"1"*32 + b"U", b"A7", ErrorCodes.DEK_DOWNGRADE_PROHIBITED),
         (b"BU", b"999U11223344556677889900AABBCCDDEEFF", b"BV", ErrorCodes.INVALID_KEY_TYPE),
     ]
 

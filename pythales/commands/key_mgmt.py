@@ -22,9 +22,10 @@ KEY_TYPE_VARIANTS = {
     "002": 7,   # TPK (Variant 7)
     "003": 4,   # CVK (Variant 4)
     "005": 3,   # PVK
-    "00A": 6,   # TAK / ZAK
-    "00B": 8,   # DEK
-    "008": 8,   # DEK
+    "008": 6,   # ZAK (LMK pair 26-27 in payShield)
+    "00A": 8,   # ZEK (LMK pair 30-31 in payShield)
+    "00B": 8,   # DEK (LMK pair 32-33 in payShield)
+    "30B": 3,   # TEK (LMK pair 32-33, variant 3 in payShield)
     "402": 4,   # CVK
 }
 
@@ -39,7 +40,7 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
     Returns (extracted_key_str, remaining_str).
     """
     if not data_str:
-        raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Empty key data string")
+        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Empty key data string")
     scheme = data_str[0].upper()
     if scheme in ("U", "X", "M"):
         target_len = 33
@@ -53,7 +54,7 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
         target_len = 17
     elif scheme in ("S", "R"):
         if len(data_str) < 16:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "TR-31 header too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "TR-31 header too short")
         if data_str[1:5].isdigit() and data_str[1] == "0":
             target_len = int(data_str[1:5])
         elif len(data_str) >= 17 and data_str[2:6].isdigit() and data_str[2] == "0":
@@ -73,7 +74,7 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
         raise PayShieldException(ErrorCodes.INVALID_KEY_SCHEME, f"Unsupported key scheme prefix: '{scheme}'")
 
     if len(data_str) < target_len:
-        raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, f"Key string incomplete: expected {target_len} chars, got {len(data_str)}")
+        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Key string incomplete: expected {target_len} chars, got {len(data_str)}")
 
     return data_str[:target_len], data_str[target_len:]
 
@@ -81,7 +82,7 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
 def _parse_key_payload(key_str: str) -> Tuple[str, bytes]:
     """Helper to extract scheme character and raw encrypted key bytes from key string."""
     if not key_str:
-        raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Empty key string")
+        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Empty key string")
     scheme = key_str[0].upper()
     hex_data = key_str[1:]
     expected_hex_len = 48 if scheme in ("T", "Y") else 32
@@ -104,7 +105,7 @@ class A0Handler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 5:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "A0 payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "A0 payload too short")
 
         mode = payload_str[0]
         key_type = payload_str[1:4]
@@ -117,9 +118,6 @@ class A0Handler(BaseCommandHandler):
             raise PayShieldException(ErrorCodes.INVALID_KEY_SCHEME, f"Unsupported key scheme: '{key_scheme}'")
 
         variant = KEY_TYPE_VARIANTS.get(key_type, 0)
-        if key_type in ("002", "003", "TPK", "TMK"):
-            self.hsm.lmk_engine.validate_pci_key_separation(key_type, variant)
-
         rem_spec = payload_str[5:]
         if rem_spec.startswith(";"):
             rem_spec = rem_spec[1:]
@@ -140,7 +138,7 @@ class A0Handler(BaseCommandHandler):
                 rem = rem[1:]
 
             if not rem:
-                raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Missing ZMK for mode 1")
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing ZMK for mode 1")
 
             zmk_str, rem_after_zmk = _extract_key_string(rem)
             # Strip optional 6-char hex KCV of ZMK if present before export scheme / spec
@@ -272,7 +270,7 @@ class A0Handler(BaseCommandHandler):
             return ErrorCodes.SUCCESS, key_lmk_hex + key_zmk_hex + kcv
 
         else:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, f"Invalid mode '{mode}'")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Invalid mode '{mode}'")
 
 
 
@@ -288,7 +286,7 @@ class BUHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 4:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "BU payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "BU payload too short")
 
         if payload_str[:3] in KEY_TYPE_VARIANTS:
             key_type = payload_str[:3]
@@ -322,7 +320,7 @@ class A2Handler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 5:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "A2 payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "A2 payload too short")
 
         comp_mode = payload_str[0]
         key_type = payload_str[1:4]
@@ -360,7 +358,7 @@ class A4Handler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 5:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "A4 payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "A4 payload too short")
 
         num_comps_str = payload_str[0]
         num_comps = 3 if num_comps_str == "3" else 2
@@ -376,7 +374,7 @@ class A4Handler(BaseCommandHandler):
         comps = []
         for _ in range(num_comps):
             if not rem:
-                raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Missing component in A4 payload")
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing component in A4 payload")
             if rem[0] in ("U", "T", "X", "Y"):
                 rem = rem[1:]
             comp_hex = rem[:comp_hex_len]
@@ -402,60 +400,74 @@ class A6Handler(BaseCommandHandler):
         A6 Import / Translate Key under ZMK to LMK Handler.
         Payload format:
         [KeyType: 3 chars] + [ZMK under LMK: Scheme + Hex] + [Key under ZMK: Scheme + Hex] + [TargetKeyScheme: 1 char]
-        Enforces DEK Variant 8 protection / no-downgrade rule ('A8').
-        Supports target key schemes: 'U', 'T', 'S', 'X', 'Y', 'E', 'A', 'D'.
+        The command layout follows Core Host Commands Guide V1.9b Rev C,
+        section "Import a Key" (A6/A7).  Variant/X9.17 DEK import remains
+        valid with a Variant LMK; the Guide's restriction applies only when
+        the HSM itself uses a Key Block LMK.
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 36:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "A6 payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "A6 payload too short")
 
         parts = payload_str.split(";") if ";" in payload_str else [payload_str]
         main_str = parts[0]
 
         key_type = main_str[:3]
-        if key_type not in KEY_TYPE_VARIANTS:
+        if key_type not in KEY_TYPE_VARIANTS and key_type != "FFF":
             raise PayShieldException(ErrorCodes.INVALID_KEY_TYPE, f"Invalid key type: '{key_type}'")
 
         rem = main_str[3:]
 
         # ZMK under LMK (dynamic parsing)
-        zmk_str, rem = _extract_key_string(rem)
+        if rem and rem[0] in "0123456789ABCDEFabcdef":
+            zmk_str, rem = rem[:16], rem[16:]
+        else:
+            zmk_str, rem = _extract_key_string(rem)
+        if zmk_str[0].upper() not in ("S", "U", "T") and len(zmk_str) != 16:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid ZMK scheme in A6")
         if zmk_str.startswith("S"):
             _, zmk_raw = TR31KeyBlock.unwrap(zmk_str, self.hsm.LMK)
         else:
-            zmk_scheme, zmk_enc_bytes = _parse_key_payload(zmk_str)
+            if len(zmk_str) == 16:
+                zmk_enc_bytes = unhexlify(zmk_str)
+            else:
+                _, zmk_enc_bytes = _parse_key_payload(zmk_str)
             zmk_raw = self.hsm.lmk_engine.decrypt_under_lmk(zmk_enc_bytes, variant=KEY_TYPE_VARIANTS["000"])
 
         # Key under ZMK
         if not rem:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Missing key under ZMK")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing key under ZMK")
 
-        key_zmk_str, trailing = _extract_key_string(rem)
-        key_zmk_scheme = key_zmk_str[0].upper()
-        target_scheme = trailing[0].upper() if trailing else key_zmk_scheme
+        if rem[0] in "0123456789ABCDEFabcdef":
+            key_zmk_str, trailing = rem[:16], rem[16:]
+            key_zmk_scheme = "Z"
+        else:
+            key_zmk_str, trailing = _extract_key_string(rem)
+            key_zmk_scheme = key_zmk_str[0].upper()
+        target_scheme = trailing[0].upper() if trailing else ("Z" if len(key_zmk_str) == 16 else key_zmk_scheme)
 
-        if target_scheme not in ("U", "T", "S", "X", "Y", "E", "A", "D"):
+        if target_scheme not in ("Z", "U", "T", "S"):
             raise PayShieldException(ErrorCodes.INVALID_KEY_SCHEME, f"Unsupported target key scheme: '{target_scheme}'")
 
-        # DEK Protection / No-downgrade Rule Enforcement
-        if key_type in ("008", "00B", "DEK"):
-            if key_zmk_scheme != "S":
-                raise PayShieldException(
-                    ErrorCodes.DEK_DOWNGRADE_PROHIBITED,
-                    f"DEK key type {key_type} imported without Key Block (Scheme 'S') is prohibited by Security Policy"
-                )
-
-        if key_zmk_scheme == "S":
-            # TR-31 Key Block unwrap using ZMK as KBMK
+        if key_zmk_scheme in ("R", "S"):
             hdr, raw_key = TR31KeyBlock.unwrap(key_zmk_str, zmk_raw)
         else:
-            key_zmk_scheme, key_zmk_enc_bytes = _parse_key_payload(key_zmk_str)
-            zmk_cipher = Crypto.Cipher.DES3.new(zmk_raw, Crypto.Cipher.DES3.MODE_ECB)
+            if key_zmk_scheme == "Z":
+                key_zmk_enc_bytes = unhexlify(key_zmk_str)
+            else:
+                _, key_zmk_enc_bytes = _parse_key_payload(key_zmk_str)
+            if key_zmk_scheme in ("M", "O"):
+                iv_field = trailing[1:17]
+                if len(iv_field) != 16:
+                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "A6 CBC key scheme requires a 16H IV")
+                zmk_cipher = Crypto.Cipher.DES3.new(zmk_raw, Crypto.Cipher.DES3.MODE_CBC, iv=unhexlify(iv_field))
+            else:
+                zmk_cipher = Crypto.Cipher.DES3.new(zmk_raw, Crypto.Cipher.DES3.MODE_ECB)
             raw_key = zmk_cipher.decrypt(key_zmk_enc_bytes)
 
         variant = KEY_TYPE_VARIANTS.get(key_type, 0)
         if target_scheme == "S":
-            default_usage = "21" if key_type in ("001", "002") else "C0" if key_type == "000" else "52" if key_type == "402" else "00"
+            default_usage = "D0" if key_type == "00B" else "22" if key_type == "00A" else "23" if key_type == "30B" else "00"
             hdr = TR31Header(
                 version_id="S",
                 key_length=80,
@@ -467,10 +479,11 @@ class A6Handler(BaseCommandHandler):
             )
             key_lmk_hex = TR31KeyBlock.wrap(raw_key, hdr, self.hsm.LMK)
         else:
-            if target_scheme in ("T", "Y", "E") and len(raw_key) == 16:
+            if target_scheme == "T" and len(raw_key) == 16:
                 raw_key = raw_key + raw_key[:8]
             enc_key_lmk = self.hsm.lmk_engine.encrypt_under_lmk(raw_key, variant)
-            key_lmk_hex = target_scheme.encode("ascii") + hexlify(enc_key_lmk).upper()
+            scheme_prefix = b"" if target_scheme == "Z" else target_scheme.encode("ascii")
+            key_lmk_hex = scheme_prefix + hexlify(enc_key_lmk).upper()
 
         kcv = LMKEngine.generate_kcv(raw_key).encode("ascii")
         return ErrorCodes.SUCCESS, key_lmk_hex + kcv
@@ -486,7 +499,7 @@ class GIHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 5:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "GI payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "GI payload too short")
 
         key_type = payload_str[:3]
         if key_type not in KEY_TYPE_VARIANTS:
@@ -536,7 +549,7 @@ class KWHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 36:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "KW payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "KW payload too short")
 
         key_type = payload_str[:3]
         if key_type not in KEY_TYPE_VARIANTS:
@@ -545,7 +558,7 @@ class KWHandler(BaseCommandHandler):
         kbmk_str, header_str = _extract_key_string(payload_str[3:])
 
         if not header_str:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Missing TR-31 header in KW payload")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing TR-31 header in KW payload")
 
         if kbmk_str.startswith("S"):
             _, kbmk_raw = TR31KeyBlock.unwrap(kbmk_str, self.hsm.LMK)

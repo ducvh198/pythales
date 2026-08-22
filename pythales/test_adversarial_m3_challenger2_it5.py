@@ -14,7 +14,7 @@ from pythales.commands.pin import (
 from pythales.commands.card_verify import (
     calculate_cvv, CWHandler, CYHandler
 )
-from pynblock.tools import get_visa_pvv
+from pythales.crypto.tools import get_visa_pvv
 
 
 @pytest.fixture

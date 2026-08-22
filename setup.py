@@ -1,4 +1,4 @@
-from setuptools import setup
+from setuptools import find_packages, setup
 
 setup(name='pythales',
       version='0.74',
@@ -26,6 +26,6 @@ setup(name='pythales',
       author_email='tim@gabets.ru',
       
       license='LGPLv2',
-      packages=['pythales'],
-      install_requires=['pycryptodome', 'tracetools', 'pynblock'],
+      packages=find_packages(exclude=('tests', 'tests.*')),
+    install_requires=['pycryptodome', 'psec==1.3.0', 'cryptography<43', 'tracetools'],
       zip_safe=True)

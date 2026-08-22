@@ -9,7 +9,7 @@ from typing import Tuple, Optional
 
 import Crypto.Cipher.DES3
 import Crypto.Cipher.AES
-from pynblock.tools import get_visa_pvv
+from pythales.crypto.tools import get_visa_pvv
 from pythales.commands.base import BaseCommandHandler
 from pythales.commands.key_mgmt import _extract_key_string
 from pythales.core.router import global_router
@@ -19,7 +19,7 @@ from pythales.crypto.keyblock import TR31KeyBlock
 
 def _decrypt_key(hsm, key_str: str, variant: int = 2) -> bytes:
     if not key_str:
-        raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Empty key string")
+        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Empty key string")
     scheme = key_str[0].upper()
     if scheme == "S":
         _, clear_key = TR31KeyBlock.unwrap(key_str, hsm.LMK)
@@ -212,7 +212,7 @@ def _extract_pin_block_and_fmt(rem: str) -> Tuple[str, str, str]:
     elif len(rem) >= 16:
         raise PayShieldException(ErrorCodes.INVALID_PIN_BLOCK, "Invalid or non-hex PIN block")
     else:
-        raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Payload too short for PIN block")
+        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Payload too short for PIN block")
 
 
 def _parse_pan_and_pvv(rem: str) -> Tuple[str, str, str]:
@@ -273,7 +273,7 @@ class CAHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 30:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "CA payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "CA payload too short")
 
         src_zpk_str, rem = _extract_key_string(payload_str)
         dst_zpk_str, rem = _extract_key_string(rem)
@@ -325,7 +325,7 @@ class DCHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 30:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "DC payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "DC payload too short")
 
         tpk_str, rem = _extract_key_string(payload_str)
         pvk_str, rem = _extract_key_string(rem)
@@ -375,7 +375,7 @@ class ECHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 30:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "EC payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "EC payload too short")
 
         zpk_str, rem = _extract_key_string(payload_str)
         pvk_str, rem = _extract_key_string(rem)
@@ -503,7 +503,7 @@ class EEHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 30:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "EE payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "EE payload too short")
 
         zpk_str, rem = _extract_key_string(payload_str)
         pvk_str, rem = _extract_key_string(rem)
@@ -519,7 +519,7 @@ class EEHandler(BaseCommandHandler):
                 account_number = parts[0]
                 rem = parts[1]
                 if len(rem) < 16:
-                    raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "EE decimalization table incomplete")
+                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "EE decimalization table incomplete")
                 dec_table = rem[:16]
                 rem = rem[16:]
                 customer_pin = decrypt_pin_block(zpk_bytes, pin_block, fmt_code, account_number)
@@ -538,11 +538,11 @@ class EEHandler(BaseCommandHandler):
                     rem = rem[12:]
 
                 if len(rem) < 16:
-                    raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "EE decimalization table incomplete")
+                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "EE decimalization table incomplete")
                 dec_table = rem[:16]
                 rem = rem[16:]
         except PayShieldException as exc:
-            if exc.error_code == ErrorCodes.INVALID_DATA_LENGTH:
+            if exc.error_code == ErrorCodes.INVALID_INPUT_DATA:
                 raise
             return exc.error_code, b""
 
@@ -593,4 +593,3 @@ class EEHandler(BaseCommandHandler):
             return ErrorCodes.SUCCESS, b""
         else:
             return ErrorCodes.LMK_ERROR, b""
-

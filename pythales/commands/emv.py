@@ -81,7 +81,7 @@ class KQHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 40:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "KQ payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "KQ payload too short")
 
         mode = payload_str[0]
         rem = payload_str[1:]
@@ -122,7 +122,7 @@ class KQHandler(BaseCommandHandler):
 
         # Modes 0 and 2 require ARQC verification
         if len(rem) < 16:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "Missing ARQC to verify in KQ payload")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing ARQC to verify in KQ payload")
 
         arqc_to_verify = rem[:16].upper()
         rem = rem[16:]
@@ -152,7 +152,7 @@ class KQHandler(BaseCommandHandler):
 
             return ErrorCodes.SUCCESS, arpc_hex
 
-        raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, f"Unsupported KQ mode '{mode}'")
+        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported KQ mode '{mode}'")
 
 
 @global_router.register("KU")
@@ -164,7 +164,7 @@ class KUHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 41:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "KU payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "KU payload too short")
 
         mdk_str, rem = _extract_key_string(payload_str)
         mdk_raw = _get_key_raw(self.hsm, mdk_str, default_variant=9)
@@ -198,7 +198,7 @@ class KVHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 41:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "KV payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "KV payload too short")
 
         mdk_str, rem = _extract_key_string(payload_str)
         mdk_raw = _get_key_raw(self.hsm, mdk_str, default_variant=9)
@@ -232,7 +232,7 @@ class KYHandler(BaseCommandHandler):
         """
         payload_str = payload.decode("ascii", errors="ignore")
         if len(payload_str) < 41:
-            raise PayShieldException(ErrorCodes.INVALID_DATA_LENGTH, "KY payload too short")
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "KY payload too short")
 
         mdk_str, rem = _extract_key_string(payload_str)
         mdk_raw = _get_key_raw(self.hsm, mdk_str, default_variant=9)
@@ -250,4 +250,3 @@ class KYHandler(BaseCommandHandler):
         mac_bytes = iso9797_alg3_mac(sk_smi, script_bytes)
 
         return ErrorCodes.SUCCESS, hexlify(mac_bytes).upper()
-

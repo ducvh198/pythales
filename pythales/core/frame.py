@@ -6,6 +6,8 @@ import struct
 from dataclasses import dataclass
 from typing import Optional, Union
 
+from pythales.core.errors import ErrorCodes, PayShieldException
+
 
 @dataclass
 class CommandFrame:
@@ -47,7 +49,14 @@ class MessageFraming:
             if len(data) == expected_len + 2:
                 data = data[2:]
 
-        if header_length > 0 and len(data) >= header_length:
+        minimum_length = header_length + 2
+        if len(data) < minimum_length:
+            raise PayShieldException(
+                ErrorCodes.INVALID_INPUT_DATA,
+                f"Message is too short: expected at least {minimum_length} bytes, got {len(data)}",
+            )
+
+        if header_length > 0:
             header_bytes = data[:header_length]
             body = data[header_length:]
         else:
@@ -57,19 +66,19 @@ class MessageFraming:
         delimiter_present = False
         trailer_bytes = b""
 
-        if len(body) < 2:
-            command_code = body.decode("ascii", errors="ignore").upper() if body else ""
-            payload_bytes = b""
+        try:
+            command_code = body[:2].decode("ascii").upper()
+        except UnicodeDecodeError as exc:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Command code is not ASCII") from exc
+
+        rem = body[2:]
+        delim_pos = rem.find(b"\x19")
+        if delim_pos != -1:
+            payload_bytes = rem[:delim_pos]
+            delimiter_present = True
+            trailer_bytes = rem[delim_pos + 1:]
         else:
-            command_code = body[:2].decode("ascii", errors="ignore").upper()
-            rem = body[2:]
-            delim_pos = rem.find(b"\x19")
-            if delim_pos != -1:
-                payload_bytes = rem[:delim_pos]
-                delimiter_present = True
-                trailer_bytes = rem[delim_pos + 1:]
-            else:
-                payload_bytes = rem
+            payload_bytes = rem
 
         return CommandFrame(
             header_bytes=header_bytes,
@@ -92,19 +101,16 @@ class MessageFraming:
         Format response payload according to PayShield response envelope specification:
         [2-Byte TCP Length] (Optional) + [Echoed Header] + [Response Code (2 A)] + [Error Code (2 A/N)] + [Response Data]
 
-        TRUNCATION RULE: When Error Code != '00', HSM MUST discard all Response Data fields and end immediately after Error Code.
+        Response data is supplied by the command handler.  Some payShield errors
+        include command-specific diagnostic fields, so framing must not discard it.
         """
         resp_str = response_code.decode("ascii", errors="ignore") if isinstance(response_code, bytes) else str(response_code)
         err_str = error_code.decode("ascii", errors="ignore") if isinstance(error_code, bytes) else str(error_code)
 
-        # TRUNCATION RULE: When Error Code != '00', discard all response data
-        if err_str != "00":
-            effective_payload = b""
+        if isinstance(payload_bytes, str):
+            effective_payload = payload_bytes.encode("ascii")
         else:
-            if isinstance(payload_bytes, str):
-                effective_payload = payload_bytes.encode("ascii")
-            else:
-                effective_payload = payload_bytes or b""
+            effective_payload = payload_bytes or b""
 
         body = resp_str.encode("ascii") + err_str.encode("ascii") + effective_payload
         response_msg = header_bytes + body
@@ -114,4 +120,3 @@ class MessageFraming:
             return length_prefix + response_msg
 
         return response_msg
-

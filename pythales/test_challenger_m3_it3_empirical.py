@@ -2,7 +2,7 @@ import unittest
 from binascii import unhexlify, hexlify
 import Crypto.Cipher.AES
 import Crypto.Cipher.DES3
-from pynblock.tools import get_visa_pvv
+from pythales.crypto.tools import get_visa_pvv
 
 from pythales.hsm import HSM
 from pythales.commands.pin import _extract_pin_block_and_fmt, encrypt_pin_block, decrypt_pin_block, _decrypt_key

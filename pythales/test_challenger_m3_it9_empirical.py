@@ -238,7 +238,7 @@ def test_dc_pin_verification_success_and_mismatch(hsm):
     pvki = "1"
 
     # Compute expected PVV using pynblock get_visa_pvv
-    from pynblock.tools import get_visa_pvv
+    from pythales.crypto.tools import get_visa_pvv
     pvv_bytes = get_visa_pvv(
         pan.encode("ascii"),
         pvki.encode("ascii"),

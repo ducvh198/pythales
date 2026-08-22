@@ -5,7 +5,7 @@ Adversarial and Edge-Case Test Suite for Milestone M3 (PIN Processing & Card Ver
 import unittest
 from binascii import hexlify, unhexlify
 import Crypto.Cipher.DES3
-from pynblock.tools import get_visa_pvv
+from pythales.crypto.tools import get_visa_pvv
 
 from pythales.hsm import HSM
 from pythales.commands.pin import encrypt_pin_block, decrypt_pin_block, _decrypt_key

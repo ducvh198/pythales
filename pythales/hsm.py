@@ -11,7 +11,7 @@ from collections import OrderedDict
 import pythales.compat
 from Crypto.Cipher import DES, DES3
 from binascii import hexlify, unhexlify
-from pynblock.tools import str2bytes, raw2str, raw2B, B2raw, xor, get_visa_pvv, get_visa_cvv, get_digits_from_string, key_CV, get_clear_pin, check_key_parity, modify_key_parity
+from pythales.crypto.tools import str2bytes, raw2str, raw2B, B2raw, xor, get_visa_pvv, get_visa_cvv, get_digits_from_string, key_CV, get_clear_pin, check_key_parity, modify_key_parity
 
 from pythales.crypto.lmk import LMKEngine
 from pythales.core.frame import MessageFraming, CommandFrame, ResponseFrame
@@ -488,7 +488,7 @@ class HSM():
 
         self.debug = debug
         self.skip_parity_check = skip_parity
-        self.port = port if port else 1500
+        self.port = port if port is not None else 1500
         self.approve_all = approve_all
         if self.approve_all:
             print('\n\n\tHSM is forced to approve all the requests!\n')
@@ -538,35 +538,31 @@ class HSM():
             header_len = len(self.header) if self.header else 0
         else:
             header_len = header_length
-        frame = MessageFraming.parse_request(raw_data, header_length=header_len)
-        
-        if self.header and frame.header_bytes and frame.header_bytes != self.header and len(self.header) == len(frame.header_bytes):
-            return MessageFraming.format_response(
-                header_bytes=self.header,
-                response_code="ZZ",
-                error_code=ErrorCodes.FUNCTION_NOT_SUPPORTED
-            )
-
         try:
+            frame = MessageFraming.parse_request(raw_data, header_length=header_len)
             res = global_router.dispatch(frame.command_code, self, frame)
             if isinstance(res, ResponseFrame):
                 return res.build()
             return res
         except PayShieldException as pe:
-            cmd = frame.command_code
+            frame = locals().get("frame")
+            cmd = frame.command_code if frame is not None else ""
             resp_code = cmd[0] + chr(ord(cmd[1]) + 1) if len(cmd) == 2 else "ZZ"
+            received_header = frame.header_bytes if frame is not None else raw_data[:header_len]
             return MessageFraming.format_response(
-                header_bytes=frame.header_bytes or self.header,
+                header_bytes=received_header,
                 response_code=resp_code,
                 error_code=pe.error_code
             )
         except Exception:
-            cmd = frame.command_code
+            frame = locals().get("frame")
+            cmd = frame.command_code if frame is not None else ""
             resp_code = cmd[0] + chr(ord(cmd[1]) + 1) if len(cmd) == 2 else "ZZ"
+            received_header = frame.header_bytes if frame is not None else raw_data[:header_len]
             return MessageFraming.format_response(
-                header_bytes=frame.header_bytes or self.header,
+                header_bytes=received_header,
                 response_code=resp_code,
-                error_code=ErrorCodes.FUNCTION_NOT_SUPPORTED
+                error_code=ErrorCodes.INTERNAL_HARDWARE_ERROR
             )
 
     def run(self):
@@ -998,6 +994,7 @@ class PyThalesHSM(HSM):
         )
         self._async_server = None
         self._server_thread = None
+        self._server_loop = None
 
     def execute_command(
         self, raw_data: bytes, header_length: Optional[int] = None
@@ -1046,16 +1043,50 @@ class PyThalesHSM(HSM):
         )
 
         if background:
+            started = threading.Event()
+            startup_error = []
+
             def _run_loop():
                 loop = asyncio.new_event_loop()
+                self._server_loop = loop
                 asyncio.set_event_loop(loop)
-                loop.run_until_complete(self._async_server.start())
-                loop.run_forever()
+                try:
+                    loop.run_until_complete(self._async_server.start())
+                except BaseException as exc:
+                    startup_error.append(exc)
+                    started.set()
+                    return
+                else:
+                    started.set()
+                    loop.run_forever()
+                finally:
+                    if self._async_server is not None and self._async_server.is_running:
+                        loop.run_until_complete(self._async_server.stop())
+                    pending = asyncio.all_tasks(loop)
+                    for task in pending:
+                        task.cancel()
+                    if pending:
+                        loop.run_until_complete(
+                            asyncio.gather(*pending, return_exceptions=True)
+                        )
+                    loop.close()
 
-            self._server_thread = threading.Thread(target=_run_loop, daemon=True)
+            self._server_thread = threading.Thread(
+                target=_run_loop,
+                name=f"pythales-server-{target_port}",
+                daemon=True,
+            )
             self._server_thread.start()
-            import time
-            time.sleep(0.1)
+            if not started.wait(timeout=5.0):
+                self.stop_server()
+                raise TimeoutError("Timed out while starting the HSM server")
+            if startup_error:
+                error = startup_error[0]
+                self._server_thread.join(timeout=1.0)
+                self._server_thread = None
+                self._server_loop = None
+                self._async_server = None
+                raise error
         else:
             asyncio.run(self._async_server.serve_forever())
 
@@ -1063,13 +1094,23 @@ class PyThalesHSM(HSM):
         """
         Stop the background server if running.
         """
-        if self._async_server is not None:
-            if self._async_server._server is not None:
-                loop = self._async_server._server.get_loop()
-                if loop and loop.is_running():
-                    asyncio.run_coroutine_threadsafe(self._async_server.stop(), loop)
+        server = self._async_server
+        loop = self._server_loop
+        thread = self._server_thread
+
+        try:
+            if server is not None and loop is not None and loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(server.stop(), loop)
+                future.result(timeout=5.0)
+                loop.call_soon_threadsafe(loop.stop)
+            if thread is not None and thread.is_alive():
+                thread.join(timeout=5.0)
+                if thread.is_alive():
+                    raise RuntimeError("HSM server thread did not stop")
+        finally:
             self._async_server = None
-        self._server_thread = None
+            self._server_thread = None
+            self._server_loop = None
 
     def is_server_running(self) -> bool:
         """Return whether server is active."""

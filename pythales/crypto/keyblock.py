@@ -9,8 +9,23 @@ import struct
 
 import Crypto.Cipher.DES3
 import Crypto.Cipher.AES
+
+try:
+    from psec import tr31 as psec_tr31
+except ModuleNotFoundError:  # Optional at import time; required for Scheme R.
+    psec_tr31 = None
 import pythales.compat
 from pythales.core.errors import PayShieldException, ErrorCodes
+
+
+def _require_psec_tr31():
+    if psec_tr31 is None:
+        raise PayShieldException(
+            ErrorCodes.INTERNAL_HARDWARE_ERROR,
+            "TR-31 Scheme R requires optional dependency 'psec==1.3.0'; "
+            "install project requirements or run with the project virtualenv",
+        )
+    return psec_tr31
 
 
 @dataclass
@@ -173,6 +188,21 @@ class TR31KeyBlock:
         else:
             hdr_obj = header
 
+        if hdr_obj.version_id in ("A", "B", "C", "D"):
+            # Core Guide section 3.1 delegates these version IDs to TR-31.
+            # Use a standards-focused implementation instead of the historical
+            # pythales XOR/CBC construction below (retained only for legacy S
+            # emulator fixtures; S is a proprietary Thales Key Block).
+            header_text = (
+                f"{hdr_obj.version_id}0000{hdr_obj.key_usage}{hdr_obj.algorithm}"
+                f"{hdr_obj.mode_of_use}{hdr_obj.key_version}{hdr_obj.exportability}0000"
+            )
+            tr31 = _require_psec_tr31()
+            try:
+                return tr31.wrap(kbmk, header_text, key_bytes).encode("ascii")
+            except (ValueError, tr31.HeaderError, tr31.KeyBlockError) as exc:
+                raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, str(exc)) from exc
+
         k_enc, k_mac = TR31KeyBlock._derive_keys(kbmk, hdr_obj.algorithm)
 
         # Build payload: 2-byte key length in bits + key_bytes + padding
@@ -228,8 +258,26 @@ class TR31KeyBlock:
         Unwrap TR-31 / Thales Key Block and return tuple of (TR31Header, clear_key_bytes).
         """
         kb_str = key_block.decode("ascii", errors="ignore") if isinstance(key_block, bytes) else str(key_block)
-        if len(kb_str) >= 17 and kb_str[0] in ("S", "R") and kb_str[2:6].isdigit() and kb_str[2] == "0" and not (kb_str[1:5].isdigit() and kb_str[1] == "0"):
+        if len(kb_str) >= 17 and kb_str[0] == "R" and kb_str[2:6].isdigit():
             kb_str = kb_str[1:]
+        elif len(kb_str) >= 17 and kb_str[0] == "S" and kb_str[2:6].isdigit() and kb_str[2] == "0" and not (kb_str[1:5].isdigit() and kb_str[1] == "0"):
+            kb_str = kb_str[1:]
+
+        if kb_str and kb_str[0] in ("A", "B", "C", "D"):
+            tr31 = _require_psec_tr31()
+            try:
+                header, clear_key = tr31.unwrap(kbmk, kb_str)
+            except (ValueError, tr31.HeaderError, tr31.KeyBlockError) as exc:
+                raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, str(exc)) from exc
+            return TR31Header(
+                version_id=header.version_id,
+                key_length=int(kb_str[1:5]),
+                key_usage=header.key_usage,
+                algorithm=header.algorithm,
+                mode_of_use=header.mode_of_use,
+                key_version=header.version_num,
+                exportability=header.exportability,
+            ), clear_key
 
         if len(kb_str) < 32:
             raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, f"Key block length too short: {len(kb_str)}")

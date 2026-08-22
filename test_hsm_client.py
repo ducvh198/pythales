@@ -34,12 +34,21 @@ def live_hsm_server():
     on the target port before running socket client tests.
     """
     host = os.environ.get("HSM_HOST", "127.0.0.1")
-    port = int(os.environ.get("HSM_PORT", "1500"))
+    configured_port = os.environ.get("HSM_PORT")
+    port = int(configured_port) if configured_port is not None else 0
     hsm = PyThalesHSM(port=port)
     hsm.start_server(host=host, port=port, background=True)
-    time.sleep(0.1)
-    yield hsm
-    hsm.stop_server()
+    bound_port = hsm._async_server._server.sockets[0].getsockname()[1]
+    previous_port = os.environ.get("HSM_PORT")
+    os.environ["HSM_PORT"] = str(bound_port)
+    try:
+        yield hsm
+    finally:
+        hsm.stop_server()
+        if previous_port is None:
+            os.environ.pop("HSM_PORT", None)
+        else:
+            os.environ["HSM_PORT"] = previous_port
 
 
 def get_client_socket(host=None, port=None):

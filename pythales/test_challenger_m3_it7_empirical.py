@@ -104,7 +104,7 @@ def test_dc_pvv_verification_success_and_failure(hsm, keys):
     pan = "4000999988887777"
     pvki = "1"
 
-    from pynblock.tools import get_visa_pvv
+    from pythales.crypto.tools import get_visa_pvv
     pvk_hex = hexlify(keys["raw_pvk"]).decode("ascii").upper()
     calc_pvv = get_visa_pvv(pan.encode(), pvki.encode(), pin.encode(), pvk_hex.encode()).decode("ascii")
 
@@ -141,7 +141,7 @@ def test_ec_pin_under_lmk_and_interchange_verification(hsm, keys):
     assert dec_pin_lmk == pin
 
     # Mode 2: With PVV -> verify interchange PIN
-    from pynblock.tools import get_visa_pvv
+    from pythales.crypto.tools import get_visa_pvv
     pvk_hex = hexlify(keys["raw_pvk"]).decode("ascii").upper()
     calc_pvv = get_visa_pvv(pan.encode(), b"1", pin.encode(), pvk_hex.encode()).decode("ascii")
 

@@ -4,6 +4,12 @@ import getopt
 import os
 import sys
 
+# When running directly from a source checkout, use the project package and
+# show which interpreter owns the optional compatibility dependencies.
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
 from pythales.hsm import PyThalesHSM
 
 def show_help(name):

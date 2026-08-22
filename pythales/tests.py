@@ -20,7 +20,7 @@ class TestDummyMessage(unittest.TestCase):
 
     def test_dummy_message_trace_empty(self):
         self.assertEqual(self.message.trace(), '')
-    
+
     def test_dummy_message_get_non_existent_field(self):
         self.assertEqual(self.message.get('IDDQD'), None)
 
@@ -50,8 +50,8 @@ class TestParseMessage(unittest.TestCase):
 
     def test_parse_message_command_code_and_data(self):
         parsed = parse_message(b'\x00\x07HDRDCXX', b'HDR')
-        self.assertEqual(parsed[0], b'DC')    
-        self.assertEqual(parsed[1], b'XX')    
+        self.assertEqual(parsed[0], b'DC')
+        self.assertEqual(parsed[1], b'XX')
 
 
 class TestOutgoingMessageClass(unittest.TestCase):
@@ -109,7 +109,7 @@ class TestA0(unittest.TestCase):
 
     def test_key_scheme_parsed(self):
         self.assertEqual(self.a0.fields['Key Scheme'], b'U')
-    
+
     def test_zmk_tpk_flag_parsed(self):
         self.assertEqual(self.a0.fields['ZMK/TMK Flag'], b'1')
 
@@ -131,7 +131,7 @@ class TestDC(unittest.TestCase):
     def setUp(self):
         data = b'UDEADBEEFDEADBEEFDEADBEEFDEADBEEF1234567890ABCDEF1234567890ABCDEF2B687AEFC34B1A890100112345678918723'
         self.dc = DC(data)
-        
+
     def test_tpk_parsed(self):
         self.assertEqual(self.dc.fields['TPK'], b'UDEADBEEFDEADBEEFDEADBEEFDEADBEEF')
 
@@ -159,7 +159,7 @@ class TestDC(unittest.TestCase):
 
 class TestCA(unittest.TestCase):
     """
-    18:47:19.371109 << 108 bytes received from 192.168.56.101:33284: 
+    18:47:19.371109 << 108 bytes received from 192.168.56.101:33284:
         00 6a 53 53 53 53 43 41 55 45 44 34 41 33 35 44         .jSSSSCAUED4A35D
         35 32 43 39 30 36 33 41 31 45 44 34 41 33 35 44         52C9063A1ED4A35D
         35 32 43 39 30 36 33 41 31 55 44 33 39 44 33 39         52C9063A1UD39D39
@@ -264,7 +264,7 @@ class TestECAccountNumber(unittest.TestCase):
 
     def test_zpk_parsed(self):
         self.assertEqual(self.ec.fields['ZPK'], b'UAE79D203F9640A93CFBA155E345953F6')
-        
+
     def test_pvk_pair_parsed(self):
         self.assertEqual(self.ec.fields['PVK Pair'], b'7336D50C47128D710DF450BCB2C6461B')
 
@@ -292,7 +292,7 @@ class TestECToken(unittest.TestCase):
 
     def test_zpk_parsed(self):
         self.assertEqual(self.ec.fields['ZPK'], b'UAE79D203F9640A93CFBA155E345953F6')
-        
+
     def test_pvk_pair_parsed(self):
         self.assertEqual(self.ec.fields['PVK Pair'], b'7336D50C47128D710DF450BCB2C6461B')
 
@@ -314,7 +314,7 @@ class TestECToken(unittest.TestCase):
 
 class TestHC(unittest.TestCase):
     """
-    16:48:04.000521 << 45 bytes received from 192.168.56.101:42292: 
+    16:48:04.000521 << 45 bytes received from 192.168.56.101:42292:
     00 2b 53 53 53 53 48 43 55 31 32 33 34 35 36 37         .+SSSSHCU1234567
     38 39 30 41 42 43 44 45 46 31 32 33 34 35 36 37         890ABCDEF1234567
     38 39 30 41 42 43 44 45 46 3b 58 55 31                  890ABCDEF;XU1
@@ -330,7 +330,7 @@ class TestHC(unittest.TestCase):
 
 class TestBU(unittest.TestCase):
     """
-    16:53:16.560494 << 44 bytes received from 192.168.56.101:42364: 
+    16:53:16.560494 << 44 bytes received from 192.168.56.101:42364:
     00 2a 53 53 53 53 42 55 30 32 31 55 41 39 37 38         .*SSSSBU021UA978
     33 31 38 36 32 45 33 31 43 43 43 33 36 45 38 35         31862E31CCC36E85
     34 46 45 31 38 34 45 45 36 34 35 33                     4FE184EE6453
@@ -370,7 +370,7 @@ class TestHSMThread(unittest.TestCase):
         data = b'UED4A35D52C9063A1ED4A35D52C9063A1UD39D39EB7C932CF367C97C5B10B2C195127DF366B86AE2D9A70303552000000012'
         self.ca = CA(data)
         with self.assertRaisesRegex(ValueError, 'Unsupported PIN block format: 03'):
-            self.hsm.translate_pinblock(self.ca)  
+            self.hsm.translate_pinblock(self.ca)
 
     """
     User-defined key
@@ -395,7 +395,7 @@ class TestHSMThread(unittest.TestCase):
         43 42 32 43 36 34 36 31 42 43 33 32 46 31 30 34         CB2C6461BC32F104
         41 36 38 34 36 42 44 38 37 30 31 34 30 37 30 30         A6846BD870140700
         30 30 30 30 30 31 30 31 33 38 34 33                     000001013843
-        
+
         [ZPK                  ]: [U827E67B59A1D6B8F827E67B59A1D6B8F]
         [PVK Pair             ]: [7336D50C47128D710DF450BCB2C6461B]
         [PIN block            ]: [C32F104A6846BD87]
@@ -506,7 +506,7 @@ class TestHSMResponsesMapping(unittest.TestCase):
 
 
     def test_DC_response(self):
-        data = b'UDEADBEEFDEADBEEFDEADBEEFDEADBEEF1234567890ABCDEF1234567890ABCDEF2B687AEFC34B1A890100112345678918723'        
+        data = b'UDEADBEEFDEADBEEFDEADBEEFDEADBEEF1234567890ABCDEF1234567890ABCDEF2B687AEFC34B1A890100112345678918723'
         response = self.hsm.get_response(DC(data))
         self.assertEqual(response.get('Response Code'), b'DD')
 
@@ -634,7 +634,7 @@ class TestMilestoneM1CoreAndLMK(unittest.TestCase):
 
         exc = PayShieldException("10")
         self.assertEqual(exc.error_code, "10")
-        self.assertIn("Key check value mismatch", exc.message)
+        self.assertIn("Source key parity error", exc.message)
 
         exc_custom = PayShieldException("01", "Custom LMK Failure")
         self.assertEqual(exc_custom.error_code, "01")
@@ -661,14 +661,14 @@ class TestMilestoneM1CoreAndLMK(unittest.TestCase):
         succ_resp = MessageFraming.format_response(b"HDR", "ND", "00", b"DATA_FIELDS")
         self.assertEqual(succ_resp, b"HDRND00DATA_FIELDS")
 
-        err_resp = MessageFraming.format_response(b"HDR", "ND", "01", b"SHOULD_BE_DISCARDED")
-        self.assertEqual(err_resp, b"HDRND01")
+        err_resp = MessageFraming.format_response(b"HDR", "ND", "01", b"COMMAND_DIAGNOSTIC")
+        self.assertEqual(err_resp, b"HDRND01COMMAND_DIAGNOSTIC")
 
         err_prefix = MessageFraming.format_response(b"HDR", "ND", "15", b"INVALID_LEN", include_length_prefix=True)
-        self.assertEqual(err_prefix, b"\x00\x07HDRND15")
+        self.assertEqual(err_prefix, b"\x00\x12HDRND15INVALID_LEN")
 
         resp_frame = ResponseFrame(header_bytes=b"HDR", response_code="ND", error_code="A7", payload_bytes=b"SECRET")
-        self.assertEqual(resp_frame.build(), b"HDRNDA7")
+        self.assertEqual(resp_frame.build(), b"HDRNDA7SECRET")
 
     def test_command_router_registration_and_dispatch(self):
         test_router = CommandRouter()
@@ -730,29 +730,16 @@ class TestMilestoneM1CoreAndLMK(unittest.TestCase):
             lmk_eng.get_variant_lmk(12)
         self.assertEqual(cm.exception.error_code, ErrorCodes.INVALID_KEY_SCHEME)
 
-    def test_pci_hsm_key_separation_rules(self):
+    def test_legacy_pci_policy_hook_does_not_redefine_a7(self):
         lmk_eng = LMKEngine(b"\x00" * 16, pci_mode=True)
-
-        with self.assertRaises(PayShieldException) as cm:
-            lmk_eng.validate_pci_key_separation("002", variant=2)
-        self.assertEqual(cm.exception.error_code, ErrorCodes.PCI_KEY_SEPARATION_VIOLATION)
-
+        self.assertTrue(lmk_eng.validate_pci_key_separation("002", variant=2))
         self.assertTrue(lmk_eng.validate_pci_key_separation("002", variant=7))
-        self.assertTrue(lmk_eng.validate_pci_key_separation("002", variant=8))
-        self.assertTrue(lmk_eng.validate_pci_key_separation("002", variant=2, pci_mode=False))
+        self.assertEqual(ErrorCodes.INVALID_ALGORITHM, "A7")
 
-    def test_dek_variant_8_protection_rules(self):
+    def test_legacy_dek_policy_hook_does_not_redefine_a8(self):
         lmk_eng = LMKEngine(b"\x00" * 16)
-
-        with self.assertRaises(PayShieldException) as cm:
-            lmk_eng.validate_dek_protection("008", variant=2)
-        self.assertEqual(cm.exception.error_code, ErrorCodes.DEK_DOWNGRADE_PROHIBITED)
-
-        self.assertTrue(lmk_eng.validate_dek_protection("008", variant=8))
-
-        with self.assertRaises(PayShieldException) as cm:
-            lmk_eng.validate_dek_protection("008", variant=8, export_scheme="U")
-        self.assertEqual(cm.exception.error_code, ErrorCodes.DEK_DOWNGRADE_PROHIBITED)
+        self.assertTrue(lmk_eng.validate_dek_protection("008", variant=2, export_scheme="U"))
+        self.assertEqual(ErrorCodes.INVALID_MODE_OF_USE, "A8")
 
 
 class TestMilestoneM2KeyMgmtAndKeyBlock(unittest.TestCase):
@@ -883,11 +870,11 @@ class TestMilestoneM2KeyMgmtAndKeyBlock(unittest.TestCase):
         a6_resp = self.hsm.process_raw_message(a6_req)
         self.assertTrue(a6_resp.startswith(b"SSSSA700"))
 
-        # DEK Protection Rule Enforcement: DEK variant 00B/008 imported without Key Block fails with 'A8'
+        # Variant LMK permits DEK import in variant format.
         dek_under_zmk = zpk_under_zmk  # scheme U
         a6_dek_bad = f"SSSSA600B{zmk_hex}{dek_under_zmk}U".encode("ascii")
         a6_dek_resp = self.hsm.process_raw_message(a6_dek_bad)
-        self.assertEqual(a6_dek_resp, b"SSSSA7A8")
+        self.assertTrue(a6_dek_resp.startswith(b"SSSSA700"))
 
         # DEK imported as TR-31 Key Block ('S') succeeds
         # Generate DEK as TR-31 Key Block wrapped under ZMK (using KW command)
@@ -989,16 +976,16 @@ class TestMilestoneM2KeyMgmtAndKeyBlock(unittest.TestCase):
         self.assertEqual(cm.exception.error_code, ErrorCodes.INVALID_KEY_BLOCK)
 
     def test_a0_invalid_key_type_999(self):
-        # 5. Invalid key type '999' in A0 returning '02'
+        # Invalid key type is standard error 04.
         resp = self.hsm.process_raw_message(b"SSSSA00999U")
-        self.assertEqual(resp, b"SSSSA102")
+        self.assertEqual(resp, b"SSSSA104")
 
     def test_bu_invalid_key_type_validation(self):
         # BU command with non-numeric / invalid key types ('ABC', 'FFFF', '999')
         for invalid_kt in ("ABC", "FFFF", "999"):
             req = f"SSSSBU{invalid_kt}U11223344556677889900AABBCCDDEEFF".encode("ascii")
             resp = self.hsm.process_raw_message(req)
-            self.assertEqual(resp, b"SSSSBV02", f"BU failed for invalid key type: {invalid_kt}")
+            self.assertEqual(resp, b"SSSSBV04", f"BU failed for invalid key type: {invalid_kt}")
 
     def test_dynamic_tr31_block_length_extraction(self):
         from pythales.commands.key_mgmt import _extract_key_string
@@ -1027,8 +1014,8 @@ class TestMilestoneM2KeyMgmtAndKeyBlock(unittest.TestCase):
         zpk_m1_resp = self.hsm.process_raw_message(f"SSSSA01001U;1{zmk_u}".encode("ascii"))
         zpk_zmk = zpk_m1_resp[8+33:8+33+33].decode("ascii")
 
-        # Test target schemes: U, T, S, X, Y, E, A, D
-        for target_sch in ("U", "T", "S", "X", "Y", "E", "A", "D"):
+        # LMK output schemes represented by A7 are Z/U/T/S.
+        for target_sch in ("Z", "U", "T", "S"):
             a6_req = f"SSSSA6001{zmk_u}{zpk_zmk}{target_sch}".encode("ascii")
             a6_resp = self.hsm.process_raw_message(a6_req)
             self.assertTrue(a6_resp.startswith(b"SSSSA700"), f"A6 failed for target scheme {target_sch}: {a6_resp}")
@@ -1096,7 +1083,7 @@ class TestMilestoneM3PinAndCardVerify(unittest.TestCase):
 
     def test_dc_dd_verify_customer_pin_format_01_and_48(self):
         from pythales.commands.pin import encrypt_pin_block, _decrypt_key
-        from pynblock.tools import get_visa_pvv
+        from pythales.crypto.tools import get_visa_pvv
         from binascii import hexlify
 
         # Generate TPK and PVK
@@ -1145,7 +1132,7 @@ class TestMilestoneM3PinAndCardVerify(unittest.TestCase):
 
     def test_ec_ed_translate_pin_block_under_lmk_format_01_and_48(self):
         from pythales.commands.pin import encrypt_pin_block, _decrypt_key
-        from pynblock.tools import get_visa_pvv
+        from pythales.crypto.tools import get_visa_pvv
         from binascii import hexlify
 
         zpk_resp = self.hsm.process_raw_message(b"SSSSA00001U")
@@ -1299,7 +1286,7 @@ class TestMilestoneM3PinAndCardVerify(unittest.TestCase):
 
     def test_dc_dd_format_48_16_digit_pan(self):
         from pythales.commands.pin import encrypt_pin_block, _decrypt_key
-        from pynblock.tools import get_visa_pvv
+        from pythales.crypto.tools import get_visa_pvv
         from binascii import hexlify
 
         tpk_resp = self.hsm.process_raw_message(b"SSSSA00002U")
@@ -1325,7 +1312,7 @@ class TestMilestoneM3PinAndCardVerify(unittest.TestCase):
 
     def test_ec_ed_format_48_16_digit_pan(self):
         from pythales.commands.pin import encrypt_pin_block, _decrypt_key
-        from pynblock.tools import get_visa_pvv
+        from pythales.crypto.tools import get_visa_pvv
         from binascii import hexlify
 
         zpk_resp = self.hsm.process_raw_message(b"SSSSA00001U")
@@ -1395,7 +1382,7 @@ class TestMilestoneM3PinAndCardVerify(unittest.TestCase):
 
     def test_fmt01_pan_pvv_collision_04_48_parsed_as_fmt01(self):
         from pythales.commands.pin import encrypt_pin_block, _decrypt_key
-        from pynblock.tools import get_visa_pvv
+        from pythales.crypto.tools import get_visa_pvv
         from binascii import hexlify
 
         tpk_resp = self.hsm.process_raw_message(b"SSSSA00002U")
@@ -1491,7 +1478,7 @@ class TestMilestoneM3PinAndCardVerify(unittest.TestCase):
         3. DC/DD: Verify PIN - Visa PVV passes full 16-digit PAN to get_visa_pvv.
         """
         from pythales.commands.pin import encrypt_pin_block, _decrypt_key
-        from pynblock.tools import get_visa_pvv
+        from pythales.crypto.tools import get_visa_pvv
         from binascii import hexlify
         tpk_resp = self.hsm.process_raw_message(b"SSSSA00002U")
         tpk_hex = tpk_resp[8:8+33].decode("ascii")
@@ -1519,7 +1506,7 @@ class TestMilestoneM3PinAndCardVerify(unittest.TestCase):
         4. EC/ED: Verify IBM PIN / PVV passes full 16-digit PAN to get_visa_pvv.
         """
         from pythales.commands.pin import encrypt_pin_block, _decrypt_key
-        from pynblock.tools import get_visa_pvv
+        from pythales.crypto.tools import get_visa_pvv
         from binascii import hexlify
         zpk_resp = self.hsm.process_raw_message(b"SSSSA00001U")
         zpk_hex = zpk_resp[8:8+33].decode("ascii")
@@ -1925,4 +1912,4 @@ if __name__ == '__main__':
 
 
 
-
+
