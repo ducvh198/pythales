@@ -422,6 +422,20 @@ class NO(DummyMessage):
         self.fields['Data'] = data
 
 
+class N0(DummyMessage):
+    """
+    Generate a Random Value
+    """
+    def __init__(self, data):
+        self.data = data
+        self.command_code = b'N0'
+        self.description = 'Generate a Random Value'
+        self.fields = OrderedDict()
+        field_size = 3
+        self.fields['Random Value Length'] = self.data[0:field_size]
+        self.data = self.data[field_size:]
+
+
 class OutgoingMessage(DummyMessage):
     def __init__(self, data=None, header=None):
         self.header = header
@@ -858,6 +872,45 @@ class HSM():
             response.set('Data', request.get('Data'))
         return response
 
+    def generate_random_value(self, request):
+        """
+        Get response to N0 command
+        """
+        response = OutgoingMessage(header=self.header)
+        response.set_response_code('N1')
+        if getattr(self, "command_n0_disabled", False) or getattr(
+            self, "command_disabled", False
+        ):
+            response.set_error_code('68')
+            return response
+
+        length_field = request.get('Random Value Length') if request else None
+        if not length_field or len(length_field) != 3:
+            response.set_error_code('15')
+            return response
+
+        try:
+            length_str = (
+                length_field.decode('ascii')
+                if isinstance(length_field, bytes)
+                else str(length_field)
+            )
+            if not length_str.isdigit():
+                response.set_error_code('15')
+                return response
+            length = int(length_str)
+        except Exception:
+            response.set_error_code('15')
+            return response
+
+        if length < 1 or length > 256:
+            response.set_error_code('01')
+            return response
+
+        response.set_error_code('00')
+        response.set('Random Value', os.urandom(length))
+        return response
+
 
     def get_key_check_value(self, request):
         """
@@ -950,6 +1003,8 @@ class HSM():
             return self.get_diagnostics_data()
         elif rqst_command_code == b'NO':
             return self.echo_network_test(request)
+        elif rqst_command_code == b'N0':
+            return self.generate_random_value(request)
         elif rqst_command_code in [b'DC', b'EC']:
             return self.verify_pin(request)
         elif rqst_command_code == b'CA':

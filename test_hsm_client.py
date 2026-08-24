@@ -223,6 +223,32 @@ def test_no_echo(sock=None, header_bytes=b""):
             sock.close()
 
 
+def test_n0_generate_random(sock=None, header_bytes=b""):
+    """
+    Test Case: Send N0 (Generate a Random Value) command.
+    Verify N1 response code, 00 error code, binary random payload length.
+    """
+    print("\n--- Test Case: Send N0 (Generate a Random Value) Command ---")
+    close_at_end = False
+    if sock is None:
+        sock = get_client_socket()
+        close_at_end = True
+    try:
+        req_payload = b"N0032"
+        resp_payload = send_receive_framed(sock, header_bytes, req_payload)
+        resp_code = resp_payload[:2].decode("utf-8", errors="replace")
+        err_code = resp_payload[2:4].decode("utf-8", errors="replace")
+        random_bytes = resp_payload[4:]
+
+        assert resp_code == "N1"
+        assert err_code == "00"
+        assert len(random_bytes) == 32
+        print("[PASS] Test Case (N0 Generate Random Value) passed.")
+    finally:
+        if close_at_end:
+            sock.close()
+
+
 def test_ca_translate_pin(sock=None, header_bytes=b""):
     """
     Test Case 5: Send CA (Translate PIN Block) command.
@@ -533,6 +559,7 @@ def main():
         test_a0_generate_key(header_bytes=header_bytes)
         test_bu_key_check_value(header_bytes=header_bytes)
         test_no_echo(header_bytes=header_bytes)
+        test_n0_generate_random(header_bytes=header_bytes)
         test_ca_translate_pin(header_bytes=header_bytes)
         test_dc_verify_pin(header_bytes=header_bytes)
         test_cvv_workflow(header_bytes=header_bytes)
