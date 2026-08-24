@@ -135,6 +135,10 @@ Options:
 python examples/hsm_server.py --port 1500 --header SSSS --debug --skip-parity
 ```
 
+Debug logging is written to the console with timestamps, log levels, client
+connections, and request/response payloads in hexadecimal. Because payloads may
+contain sensitive test data, enable this option only while troubleshooting.
+
 ### Sample Server Output
 
 ```text

@@ -4,6 +4,7 @@ import socket
 import struct
 import os
 import asyncio
+import logging
 from typing import Optional, Union, Tuple, Any
 
 from tracetools.tracetools import trace
@@ -23,6 +24,9 @@ import pythales.commands.card_verify
 import pythales.commands.mac_data
 import pythales.commands.pin
 import pythales.commands.emv
+
+
+logger = logging.getLogger("pythales.hsm")
 
 
 
@@ -559,6 +563,12 @@ class HSM():
                 return res.build()
             return res
         except PayShieldException as pe:
+            logger.debug(
+                "Command rejected with PayShield error code %s: %s",
+                pe.error_code,
+                pe,
+                exc_info=True,
+            )
             frame = locals().get("frame")
             cmd = frame.command_code if frame is not None else ""
             resp_code = cmd[0] + chr(ord(cmd[1]) + 1) if len(cmd) == 2 else "ZZ"
@@ -569,6 +579,7 @@ class HSM():
                 error_code=pe.error_code
             )
         except Exception:
+            logger.exception("Unexpected error while processing HSM request")
             frame = locals().get("frame")
             cmd = frame.command_code if frame is not None else ""
             resp_code = cmd[0] + chr(ord(cmd[1]) + 1) if len(cmd) == 2 else "ZZ"
@@ -616,7 +627,7 @@ class HSM():
         """
         """
         if self.debug:
-            print('\tDEBUG: {}\n'.format(data))
+            logger.debug("%s", data)
 
 
     def _decrypt_pinblock(self, encrypted_pinblock, encrypted_terminal_key):

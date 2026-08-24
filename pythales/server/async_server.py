@@ -84,8 +84,7 @@ class AsyncHSMServer:
             host=self.host,
             port=self.port,
         )
-        logger.info(f"AsyncHSMServer listening on {self.host}:{self.port}")
-        print(f"AsyncHSMServer listening on {self.host}:{self.port}")
+        logger.info("AsyncHSMServer listening on %s:%s", self.host, self.port)
 
 
     async def serve_forever(self) -> None:
@@ -111,7 +110,7 @@ class AsyncHSMServer:
         Handle an incoming client TCP socket stream connection.
         """
         client_peer = writer.get_extra_info("peername")
-        logger.debug(f"Client connected: {client_peer}")
+        logger.debug("Client connected: %s", client_peer)
 
         client_socket = writer.get_extra_info("socket")
         if self.enable_keepalive and client_socket is not None:
@@ -119,12 +118,17 @@ class AsyncHSMServer:
                 import socket
                 client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             except Exception as e:
-                logger.debug(f"Could not set SO_KEEPALIVE on client socket: {e}")
+                logger.debug(
+                    "Could not set SO_KEEPALIVE on client socket: %s", e,
+                    exc_info=True,
+                )
 
         if self._semaphore is not None:
             if self._semaphore.locked():
                 logger.warning(
-                    f"Max connections ({self.max_connections}) reached. Rejecting client {client_peer}"
+                    "Max connections (%s) reached. Rejecting client %s",
+                    self.max_connections,
+                    client_peer,
                 )
                 writer.close()
                 try:
@@ -153,7 +157,9 @@ class AsyncHSMServer:
                         len_bytes = await reader.readexactly(2)
                 except asyncio.TimeoutError:
                     logger.warning(
-                        f"Client {client_peer} idle timeout ({self.idle_timeout}s) expired."
+                        "Client %s idle timeout (%ss) expired.",
+                        client_peer,
+                        self.idle_timeout,
                     )
                     break
                 except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
@@ -172,11 +178,20 @@ class AsyncHSMServer:
                         raw_payload = await reader.readexactly(frame_len)
                 except asyncio.TimeoutError:
                     logger.warning(
-                        f"Client {client_peer} frame payload read timeout ({self.idle_timeout}s) expired."
+                        "Client %s frame payload read timeout (%ss) expired.",
+                        client_peer,
+                        self.idle_timeout,
                     )
                     break
                 except (asyncio.IncompleteReadError, ConnectionResetError, OSError):
                     break
+
+                logger.debug(
+                    "Received %s bytes from %s: %s",
+                    frame_len,
+                    client_peer,
+                    raw_payload.hex().upper(),
+                )
 
                 # Process message using HSM instance process_raw_message
                 resp_body = self.hsm.process_raw_message(
@@ -188,9 +203,15 @@ class AsyncHSMServer:
 
                 writer.write(resp_framed)
                 await writer.drain()
+                logger.debug(
+                    "Sent %s bytes to %s: %s",
+                    len(resp_body),
+                    client_peer,
+                    resp_body.hex().upper(),
+                )
 
         except Exception as e:
-            logger.error(f"Error handling client {client_peer}: {e}")
+            logger.exception("Error handling client %s: %s", client_peer, e)
         finally:
             self._active_connections = max(0, self._active_connections - 1)
             if self._semaphore is not None:
@@ -200,9 +221,8 @@ class AsyncHSMServer:
                 await writer.wait_closed()
             except Exception:
                 pass
-            logger.debug(f"Client disconnected: {client_peer}")
+            logger.debug("Client disconnected: %s", client_peer)
 
 
 AsyncTCPServer = AsyncHSMServer
 AsyncServer = AsyncHSMServer
-

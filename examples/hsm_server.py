@@ -11,6 +11,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from pythales.hsm import PyThalesHSM
+from pythales.logging_config import configure_console_logging
 
 def show_help(name):
     """
@@ -129,6 +130,8 @@ if __name__ == '__main__':
         elif opt in ('--help',):
             show_help(sys.argv[0])
             sys.exit(0)
+
+    configure_console_logging(debug=debug)
 
     hsm = PyThalesHSM(
         port=port,
