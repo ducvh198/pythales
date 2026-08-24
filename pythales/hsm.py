@@ -18,6 +18,7 @@ from pythales.crypto.lmk import LMKEngine
 from pythales.core.frame import MessageFraming, CommandFrame, ResponseFrame
 from pythales.core.router import global_router, CommandRouter
 from pythales.core.errors import ErrorCodes, PayShieldException
+from pythales.logging_config import configure_console_logging
 import pythales.commands.diagnostics
 import pythales.commands.key_mgmt
 import pythales.commands.card_verify
@@ -505,6 +506,8 @@ class HSM():
         self.cipher = DES3.new(self.LMK, DES3.MODE_ECB)
 
         self.debug = debug
+        if self.debug:
+            configure_console_logging(debug=True)
         self.skip_parity_check = skip_parity
         self.port = port if port is not None else 1500
         self.approve_all = approve_all

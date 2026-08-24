@@ -3,6 +3,7 @@
 import io
 import logging
 
+from pythales.hsm import PyThalesHSM
 from pythales.logging_config import configure_console_logging
 
 
@@ -12,6 +13,8 @@ def _remove_test_console_handler():
         if getattr(handler, "_pythales_console_handler", False):
             package_logger.removeHandler(handler)
             handler.close()
+    package_logger.setLevel(logging.NOTSET)
+    package_logger.propagate = True
 
 
 def test_debug_logging_is_written_to_console():
@@ -37,5 +40,18 @@ def test_console_logging_configuration_is_idempotent():
         logging.getLogger("pythales.hsm").debug("only once")
 
         assert stream.getvalue().count("only once") == 1
+    finally:
+        _remove_test_console_handler()
+
+
+def test_hsm_debug_trace_uses_console_logger():
+    stream = io.StringIO()
+    try:
+        configure_console_logging(debug=True, stream=stream)
+        hsm = PyThalesHSM(debug=True)
+
+        hsm._debug_trace("CVV mismatch")
+
+        assert "DEBUG pythales.hsm - CVV mismatch" in stream.getvalue()
     finally:
         _remove_test_console_handler()
