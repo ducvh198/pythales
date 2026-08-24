@@ -73,7 +73,7 @@ class TestA0KeyGeneration(unittest.TestCase):
         kb_str, kcv = _extract_key_string(data_kb)
         hdr, clear_zmk = TR31KeyBlock.unwrap(kb_str, self.lmk)
         self.assertEqual(hdr.key_usage, "52")
-        self.assertEqual(len(clear_zmk), 24)
+        self.assertEqual(len(clear_zmk), 16)
 
         # Key Block mode AES-256 ZMK
         req_aes_zmk = self.make_request(b"A0", b"0FFFS#52A3B00N00")
@@ -100,7 +100,9 @@ class TestA0KeyGeneration(unittest.TestCase):
         kb_str, kcv = _extract_key_string(data_kb)
         hdr, clear_cvk = TR31KeyBlock.unwrap(kb_str, self.lmk)
         self.assertEqual(hdr.key_usage, "C0")
-        self.assertEqual(len(clear_cvk), 24)
+        self.assertEqual(len(clear_cvk), 16)
+        self.assertEqual(len(kb_str), 57)
+        self.assertTrue(kb_str.startswith("S00056C0T"))
 
     def test_a0_mode1_dek_aes256_under_zmk(self):
         """
@@ -163,6 +165,53 @@ class TestA0KeyGeneration(unittest.TestCase):
         hdr_zmk, clear_cvk_zmk = TR31KeyBlock.unwrap(cvk_zmk_str, raw_zmk)
         self.assertEqual(clear_cvk_lmk, clear_cvk_zmk)
 
+    def test_a0_mode1_cvk_thales_key_block_has_57_character_fields(self):
+        """A0/A1, Core Host Commands V1.9b Rev C, Generate & Export a Key."""
+        raw_zmk = os.urandom(32)
+        zmk_header = TR31Header(
+            version_id="1",
+            key_length=128,
+            key_usage="K0",
+            algorithm="A",
+            mode_of_use="B",
+            key_version="01",
+            exportability="N",
+            lmk_identifier="02",
+        )
+        zmk_lmk_str = "S" + TR31KeyBlock.wrap(
+            raw_zmk, zmk_header, self.lmk
+        ).decode("ascii")
+        self.assertTrue(zmk_lmk_str.startswith("S10128K0AB01N0002"))
+
+        payload = f"1FFFS;0{zmk_lmk_str}S#C0T2N01N00".encode("ascii")
+        data = self.parse_response(
+            self.hsm.process_raw_message(self.make_request(b"A0", payload))
+        )
+
+        cvk_lmk, remainder = _extract_key_string(data)
+        cvk_zmk, kcv = _extract_key_string(remainder)
+
+        for key_block in (cvk_lmk, cvk_zmk):
+            self.assertEqual(len(key_block), 57)
+            self.assertEqual(key_block[0], "S")
+            self.assertEqual(key_block[1], "0")
+            self.assertEqual(key_block[2:6], "0056")
+            self.assertEqual(key_block[6:8], "C0")
+            self.assertEqual(key_block[8], "T")
+            self.assertEqual(key_block[9], "N")
+            self.assertEqual(key_block[10:12], "01")
+            self.assertEqual(key_block[12], "N")
+            self.assertEqual(key_block[13:15], "00")
+            self.assertEqual(key_block[15:17], "02")
+            self.assertEqual(len(key_block[17:49]), 32)
+            self.assertEqual(len(key_block[49:57]), 8)
+
+        _, clear_lmk = TR31KeyBlock.unwrap(cvk_lmk, self.lmk)
+        _, clear_zmk = TR31KeyBlock.unwrap(cvk_zmk, raw_zmk)
+        self.assertEqual(len(clear_lmk), 16)
+        self.assertEqual(clear_lmk, clear_zmk)
+        self.assertEqual(len(kcv), 6)
+
     def test_a0_mode1_user_reported_payload(self):
         """
         6. Test A0 Mode 1 with user reported payload containing ZMK with 6-char KCV and export spec.
@@ -197,4 +246,3 @@ class TestA0KeyGeneration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

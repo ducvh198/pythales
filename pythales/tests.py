@@ -9,7 +9,7 @@ from pythales.core.frame import MessageFraming, CommandFrame, ResponseFrame
 from pythales.core.router import CommandRouter, global_router
 from pythales.crypto.lmk import LMKEngine
 from pythales.crypto.keyblock import TR31Header, parse_header, TR31KeyBlock
-from pythales.commands.key_mgmt import _parse_key_payload
+from pythales.commands.key_mgmt import _extract_key_string, _parse_key_payload
 
 
 class TestDummyMessage(unittest.TestCase):
@@ -942,11 +942,13 @@ class TestMilestoneM2KeyMgmtAndKeyBlock(unittest.TestCase):
         # Extract TR-31 block wrapped under ZMK
         zmk_scheme, zmk_enc_bytes = _parse_key_payload(zmk_u)
         zmk_raw = self.hsm.lmk_engine.decrypt_under_lmk(zmk_enc_bytes, variant=1)
-        # a0_s_resp body starts at index 8: key_lmk_hex (80 chars) + key_zmk_hex (80 chars) + kcv (6 chars)
-        kb_zmk_str = a0_s_resp[8+80:8+80+80].decode("ascii")
+        # A1 data contains dynamic-length LMK and ZMK key fields, then a 6H KCV.
+        _, remainder = _extract_key_string(a0_s_resp[8:].decode("ascii"))
+        kb_zmk_str, kcv = _extract_key_string(remainder)
         hdr_obj, clear_key = TR31KeyBlock.unwrap(kb_zmk_str, zmk_raw)
         self.assertEqual(len(clear_key), 16)
         self.assertEqual(hdr_obj.key_usage, "21")
+        self.assertEqual(len(kcv), 6)
 
     def test_tr31_malformed_payload_decryption(self):
         # 3. Malformed TR-31 payload decryption returning '13' (without crash)

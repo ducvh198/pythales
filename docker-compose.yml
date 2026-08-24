@@ -7,9 +7,9 @@ services:
       - "${HSM_PORT:-1500}:${HSM_PORT:-1500}"
     environment:
       HSM_PORT: "${HSM_PORT:-1500}"
-      HSM_HEADER: "${HSM_HEADER:-}"
+      HSM_HEADER: "${HSM_HEADER:-00000000}"
       HSM_KEY: "${HSM_KEY:-deadbeefdeadbeefdeadbeefdeadbeef}"
-      HSM_DEBUG: "${HSM_DEBUG:-false}"
+      HSM_DEBUG: "${HSM_DEBUG:-true}"
       HSM_SKIP_PARITY: "${HSM_SKIP_PARITY:-false}"
       HSM_APPROVE_ALL: "${HSM_APPROVE_ALL:-false}"
       HSM_MAX_CONNECTIONS: "${HSM_MAX_CONNECTIONS:-1000}"

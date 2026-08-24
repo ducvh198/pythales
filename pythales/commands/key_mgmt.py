@@ -55,7 +55,15 @@ def _extract_key_string(data_str: str) -> Tuple[str, str]:
     elif scheme in ("S", "R"):
         if len(data_str) < 16:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "TR-31 header too short")
-        if data_str[1:5].isdigit() and data_str[1] == "0":
+        if (
+            len(data_str) >= 17
+            and data_str[1] in ("0", "1", "A", "B", "C", "D")
+            and data_str[2:6].isdigit()
+            and int(data_str[2:6]) >= 16
+            and 1 + int(data_str[2:6]) <= len(data_str)
+        ):
+            target_len = 1 + int(data_str[2:6])
+        elif data_str[1:5].isdigit() and data_str[1] == "0":
             target_len = int(data_str[1:5])
         elif len(data_str) >= 17 and data_str[2:6].isdigit() and data_str[2] == "0":
             target_len = 1 + int(data_str[2:6])
@@ -193,8 +201,11 @@ class A0Handler(BaseCommandHandler):
         elif algorithm in ("A1", "A"):
             key_len = 16
             hdr_algorithm = "A"
-        elif key_scheme in ("T", "Y") or algorithm in ("T2", "T3"):
+        elif key_scheme in ("T", "Y") or algorithm == "T3":
             key_len = 24
+            hdr_algorithm = "T"
+        elif algorithm == "T2":
+            key_len = 16
             hdr_algorithm = "T"
         else:
             key_len = 16
@@ -202,9 +213,21 @@ class A0Handler(BaseCommandHandler):
 
         raw_key = os.urandom(key_len)
 
+        zmk_raw = None
+        lmk_identifier = "00"
+        if mode == "1":
+            if zmk_str.startswith(("S", "R")):
+                zmk_header, zmk_raw = TR31KeyBlock.unwrap(zmk_str, self.hsm.LMK)
+                lmk_identifier = zmk_header.lmk_identifier
+            else:
+                _, zmk_enc_bytes = _parse_key_payload(zmk_str)
+                zmk_raw = self.hsm.lmk_engine.decrypt_under_lmk(
+                    zmk_enc_bytes, variant=KEY_TYPE_VARIANTS["000"]
+                )
+
         if key_scheme in ("S", "R"):
             if key_scheme == "S":
-                v_id = "1" if hdr_algorithm == "A" else "S"
+                v_id = "1" if hdr_algorithm == "A" else "0"
             else:
                 v_id = "D" if hdr_algorithm == "A" else "R"
             hdr = TR31Header(
@@ -214,11 +237,12 @@ class A0Handler(BaseCommandHandler):
                 algorithm=hdr_algorithm,
                 mode_of_use=mode_of_use,
                 key_version=key_version,
-                exportability=exportability
+                exportability=exportability,
+                lmk_identifier=lmk_identifier,
             )
             # Wrap under LMK
             key_block = TR31KeyBlock.wrap(raw_key, hdr, self.hsm.LMK)
-            if v_id in ("1", "D"):
+            if v_id in ("0", "1", "D"):
                 key_lmk_hex = key_scheme.encode("ascii") + key_block
             else:
                 key_lmk_hex = key_block
@@ -231,16 +255,10 @@ class A0Handler(BaseCommandHandler):
         if mode == "0":
             return ErrorCodes.SUCCESS, key_lmk_hex + kcv
         elif mode == "1":
-            if zmk_str.startswith("S") or zmk_str.startswith("R"):
-                _, zmk_raw = TR31KeyBlock.unwrap(zmk_str, self.hsm.LMK)
-            else:
-                zmk_scheme, zmk_enc_bytes = _parse_key_payload(zmk_str)
-                zmk_raw = self.hsm.lmk_engine.decrypt_under_lmk(zmk_enc_bytes, variant=KEY_TYPE_VARIANTS["000"])
-
             if export_scheme in ("S", "R"):
                 hdr_zmk_alg = "A" if algorithm.startswith("A") else "T"
                 if export_scheme == "S":
-                    v_id_zmk = "1" if hdr_zmk_alg == "A" else "S"
+                    v_id_zmk = "1" if hdr_zmk_alg == "A" else "0"
                 else:
                     v_id_zmk = "D" if hdr_zmk_alg == "A" else "R"
                 hdr_zmk = TR31Header(
@@ -250,10 +268,11 @@ class A0Handler(BaseCommandHandler):
                     algorithm=hdr_zmk_alg,
                     mode_of_use=mode_of_use,
                     key_version=key_version,
-                    exportability=exportability
+                    exportability=exportability,
+                    lmk_identifier=lmk_identifier,
                 )
                 key_block_zmk = TR31KeyBlock.wrap(raw_key, hdr_zmk, zmk_raw)
-                if v_id_zmk in ("1", "D"):
+                if v_id_zmk in ("0", "1", "D"):
                     key_zmk_hex = export_scheme.encode("ascii") + key_block_zmk
                 else:
                     key_zmk_hex = key_block_zmk

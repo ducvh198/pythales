@@ -38,6 +38,7 @@ class TR31Header:
     key_version: str        # '00' - '99'
     exportability: str      # 'N' (Non-exportable), 'E' (Exportable), 'S' (Sensitive)
     optional_headers: bytes = b""
+    lmk_identifier: str = "00"  # Thales version 0; reserved for TR-31 versions
 
     def to_ascii(self) -> str:
         num_opt_blocks = 0
@@ -58,7 +59,7 @@ class TR31Header:
                 else:
                     break
         opt_count = f"{num_opt_blocks:02d}"
-        reserved = "00"
+        reserved = self.lmk_identifier
         hdr_16 = (
             f"{self.version_id}"
             f"{self.key_length:04d}"
@@ -114,6 +115,7 @@ def parse_header(header_ascii: Union[str, bytes]) -> TR31Header:
     key_version = hdr_str[9:11]
     exportability = hdr_str[11]
     opt_count_str = hdr_str[12:14]
+    lmk_identifier = hdr_str[14:16]
 
     try:
         num_opts = int(opt_count_str)
@@ -153,7 +155,8 @@ def parse_header(header_ascii: Union[str, bytes]) -> TR31Header:
         mode_of_use=mode_of_use,
         key_version=key_version,
         exportability=exportability,
-        optional_headers=optional_headers
+        optional_headers=optional_headers,
+        lmk_identifier=lmk_identifier,
     )
 
 
@@ -187,6 +190,52 @@ class TR31KeyBlock:
             hdr_obj = parse_header(header)
         else:
             hdr_obj = header
+
+        # payShield proprietary Thales Key Block version 0.  The outer key
+        # scheme ('S') is added by the host-command field, so this method
+        # returns the 56-character inner block.  Core Host Commands V1.9b
+        # A0 defines T2 as a 16-byte key; Host Command Examples V1.9 section
+        # 3.6 shows the byte-exact 16 header + 32 ciphertext + 8 MAC layout.
+        if hdr_obj.version_id == "0":
+            if len(key_bytes) != 16:
+                raise PayShieldException(
+                    ErrorCodes.INVALID_KEY_LENGTH,
+                    "Thales Key Block version 0 requires a 16-byte key",
+                )
+
+            hdr_obj.key_length = 56
+            hdr_bytes = hdr_obj.to_ascii().encode("ascii")
+            k_enc, k_mac = TR31KeyBlock._derive_keys(kbmk, hdr_obj.algorithm)
+
+            if len(k_enc) == 32:
+                enc_cipher = Crypto.Cipher.AES.new(
+                    k_enc, Crypto.Cipher.AES.MODE_CBC, iv=b"\x00" * 16
+                )
+            else:
+                enc_cipher = Crypto.Cipher.DES3.new(
+                    k_enc[:16] if len(k_enc) == 16 else k_enc[:24],
+                    Crypto.Cipher.DES3.MODE_CBC,
+                    iv=b"\x00" * 8,
+                )
+            enc_payload_hex = hexlify(enc_cipher.encrypt(key_bytes)).upper()
+
+            mac_data = hdr_bytes + enc_payload_hex
+            if len(k_mac) == 32:
+                mac_cipher = Crypto.Cipher.AES.new(
+                    k_mac, Crypto.Cipher.AES.MODE_CBC, iv=b"\x00" * 16
+                )
+                mac_data += b"\x00" * ((-len(mac_data)) % 16)
+                mac_block = mac_cipher.encrypt(mac_data)[-16:]
+            else:
+                mac_cipher = Crypto.Cipher.DES3.new(
+                    k_mac[:16] if len(k_mac) == 16 else k_mac[:24],
+                    Crypto.Cipher.DES3.MODE_CBC,
+                    iv=b"\x00" * 8,
+                )
+                mac_data += b"\x00" * ((-len(mac_data)) % 8)
+                mac_block = mac_cipher.encrypt(mac_data)[-8:]
+
+            return hdr_bytes + enc_payload_hex + hexlify(mac_block[:4]).upper()
 
         if hdr_obj.version_id in ("A", "B", "C", "D"):
             # Core Guide section 3.1 delegates these version IDs to TR-31.
@@ -258,9 +307,12 @@ class TR31KeyBlock:
         Unwrap TR-31 / Thales Key Block and return tuple of (TR31Header, clear_key_bytes).
         """
         kb_str = key_block.decode("ascii", errors="ignore") if isinstance(key_block, bytes) else str(key_block)
-        if len(kb_str) >= 17 and kb_str[0] == "R" and kb_str[2:6].isdigit():
-            kb_str = kb_str[1:]
-        elif len(kb_str) >= 17 and kb_str[0] == "S" and kb_str[2:6].isdigit() and kb_str[2] == "0" and not (kb_str[1:5].isdigit() and kb_str[1] == "0"):
+        if (
+            len(kb_str) >= 17
+            and kb_str[0] in ("R", "S")
+            and kb_str[2:6].isdigit()
+            and int(kb_str[2:6]) == len(kb_str) - 1
+        ):
             kb_str = kb_str[1:]
 
         if kb_str and kb_str[0] in ("A", "B", "C", "D"):
@@ -283,6 +335,59 @@ class TR31KeyBlock:
             raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, f"Key block length too short: {len(kb_str)}")
 
         hdr_obj = parse_header(kb_str)
+
+        if hdr_obj.version_id == "0":
+            if hdr_obj.key_length != len(kb_str) or len(kb_str) != 56:
+                raise PayShieldException(
+                    ErrorCodes.INVALID_KEY_BLOCK,
+                    f"Invalid Thales version 0 block length: header={hdr_obj.key_length}, actual={len(kb_str)}",
+                )
+
+            enc_payload_hex = kb_str[16:48].encode("ascii")
+            supplied_mac = kb_str[48:56].upper()
+            try:
+                enc_payload = unhexlify(enc_payload_hex)
+            except Exception as exc:
+                raise PayShieldException(
+                    ErrorCodes.INVALID_KEY_BLOCK,
+                    "Invalid hex characters in Thales version 0 encrypted key data",
+                ) from exc
+
+            k_enc, k_mac = TR31KeyBlock._derive_keys(kbmk, hdr_obj.algorithm)
+            mac_data = kb_str[:16].encode("ascii") + enc_payload_hex
+            if len(k_mac) == 32:
+                mac_cipher = Crypto.Cipher.AES.new(
+                    k_mac, Crypto.Cipher.AES.MODE_CBC, iv=b"\x00" * 16
+                )
+                mac_data += b"\x00" * ((-len(mac_data)) % 16)
+                mac_block = mac_cipher.encrypt(mac_data)[-16:]
+            else:
+                mac_cipher = Crypto.Cipher.DES3.new(
+                    k_mac[:16] if len(k_mac) == 16 else k_mac[:24],
+                    Crypto.Cipher.DES3.MODE_CBC,
+                    iv=b"\x00" * 8,
+                )
+                mac_data += b"\x00" * ((-len(mac_data)) % 8)
+                mac_block = mac_cipher.encrypt(mac_data)[-8:]
+
+            expected_mac = hexlify(mac_block[:4]).upper().decode("ascii")
+            if supplied_mac != expected_mac:
+                raise PayShieldException(
+                    ErrorCodes.INVALID_KEY_CHECK_VALUE,
+                    f"Thales Key Block MAC mismatch: expected '{expected_mac}', got '{supplied_mac}'",
+                )
+
+            if len(k_enc) == 32:
+                dec_cipher = Crypto.Cipher.AES.new(
+                    k_enc, Crypto.Cipher.AES.MODE_CBC, iv=b"\x00" * 16
+                )
+            else:
+                dec_cipher = Crypto.Cipher.DES3.new(
+                    k_enc[:16] if len(k_enc) == 16 else k_enc[:24],
+                    Crypto.Cipher.DES3.MODE_CBC,
+                    iv=b"\x00" * 8,
+                )
+            return hdr_obj, dec_cipher.decrypt(enc_payload)
 
 
 

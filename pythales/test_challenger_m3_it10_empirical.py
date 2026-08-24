@@ -203,21 +203,21 @@ def test_tr31_scheme_S_in_m3_commands(hsm):
     zpk_resp = hsm.process_raw_message(b"1234A00001S")
     hdr, code, err, data = parse_resp(zpk_resp)
     assert err == "00"
-    zpk_str = data[:80].decode("ascii")
+    zpk_str, _ = _extract_key_string(data.decode("ascii"))
     assert zpk_str.startswith("S")
 
     # Generate PVK under TR-31 (Scheme 'S')
     pvk_resp = hsm.process_raw_message(b"1234A00005S")
     hdr, code, err, data = parse_resp(pvk_resp)
     assert err == "00"
-    pvk_str = data[:80].decode("ascii")
+    pvk_str, _ = _extract_key_string(data.decode("ascii"))
     assert pvk_str.startswith("S")
 
     # Generate CVK under TR-31 (Scheme 'S')
     cvk_resp = hsm.process_raw_message(b"1234A00402S")
     hdr, code, err, data = parse_resp(cvk_resp)
     assert err == "00"
-    cvk_str = data[:80].decode("ascii")
+    cvk_str, _ = _extract_key_string(data.decode("ascii"))
     assert cvk_str.startswith("S")
 
     pan = "4111111111111111"
