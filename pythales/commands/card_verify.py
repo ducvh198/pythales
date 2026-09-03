@@ -81,6 +81,10 @@ class CWHandler(BaseCommandHandler):
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "CW payload too short")
 
         cvk_str, rem = _extract_key_string(payload_str)
+        if "\x19" in rem:
+            rem = rem.split("\x19", 1)[0]
+        if "%" in rem:
+            rem = rem.split("%", 1)[0]
         rem = rem.lstrip(";").rstrip("?")
 
         if ";" in rem:
@@ -132,6 +136,10 @@ class CYHandler(BaseCommandHandler):
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "CY payload too short")
 
         cvk_str, rem = _extract_key_string(payload_str)
+        if "\x19" in rem:
+            rem = rem.split("\x19", 1)[0]
+        if "%" in rem:
+            rem = rem.split("%", 1)[0]
         rem = rem.rstrip("?")
 
         raw_parts = rem.split(";")

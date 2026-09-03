@@ -140,7 +140,7 @@ class A0Handler(BaseCommandHandler):
         zmk_str = ""
         rem_after_zmk = ""
 
-        if mode == "1":
+        if mode == "1" and not rem_spec.startswith("#"):
             rem = rem_spec
             if rem and rem[0] in ("0", "1"):  # optional ZMK flag
                 rem = rem[1:]
@@ -215,7 +215,7 @@ class A0Handler(BaseCommandHandler):
 
         zmk_raw = None
         lmk_identifier = "00"
-        if mode == "1":
+        if mode == "1" and zmk_str:
             if zmk_str.startswith(("S", "R")):
                 zmk_header, zmk_raw = TR31KeyBlock.unwrap(zmk_str, self.hsm.LMK)
                 lmk_identifier = zmk_header.lmk_identifier
@@ -227,7 +227,7 @@ class A0Handler(BaseCommandHandler):
 
         if key_scheme in ("S", "R"):
             if key_scheme == "S":
-                v_id = "1" if hdr_algorithm == "A" else "0"
+                v_id = "1" if ((mode == "1" and not zmk_str) or hdr_algorithm == "A") else "0"
             else:
                 v_id = "D" if hdr_algorithm == "A" else "R"
             hdr = TR31Header(
@@ -252,7 +252,7 @@ class A0Handler(BaseCommandHandler):
 
         kcv = LMKEngine.generate_kcv(raw_key, algorithm=algorithm).encode("ascii")
 
-        if mode == "0":
+        if mode == "0" or (mode == "1" and not zmk_str):
             return ErrorCodes.SUCCESS, key_lmk_hex + kcv
         elif mode == "1":
             if export_scheme in ("S", "R"):

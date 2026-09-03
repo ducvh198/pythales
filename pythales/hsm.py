@@ -100,7 +100,10 @@ class A0(DummyMessage):
         self.fields['Key Scheme'] = self.data[0:field_size]
         self.data = self.data[field_size:]
 
-        if self.fields['Mode'] == b'1':
+        if self.data[0:1] == b'#':
+            self.fields['Key Block Header'] = self.data[1:]
+            self.data = b''
+        elif self.fields['Mode'] == b'1':
             # Delimiter
             field_size = 1
             if self.data[0:field_size] == b';':
@@ -239,10 +242,21 @@ class CW(DummyMessage):
         self.fields = OrderedDict()
 
         # CVK
-        if self.data[0:1] in [b'U', b'T', b'S']:
+        if self.data[0:1] in [b'S', b'R']:
+            if len(self.data) >= 6 and self.data[2:6].isdigit():
+                field_size = 1 + int(self.data[2:6])
+            elif len(self.data) >= 5 and self.data[1:5].isdigit():
+                field_size = int(self.data[1:5])
+            else:
+                field_size = 33
+        elif self.data[0:1] in [b'T', b'Y']:
+            field_size = 49
+        elif self.data[0:1] in [b'U', b'X', b'M']:
             field_size = 33
-            self.fields['CVK'] = self.data[0:field_size]
-            self.data = self.data[field_size:]
+        else:
+            field_size = 32
+        self.fields['CVK'] = self.data[0:field_size]
+        self.data = self.data[field_size:]
 
         # Primary Account Number
         delimiter_index = 0
@@ -273,10 +287,21 @@ class CY(DummyMessage):
         self.fields = OrderedDict()
 
         # CVK
-        if self.data[0:1] in [b'U', b'T', b'S']:
+        if self.data[0:1] in [b'S', b'R']:
+            if len(self.data) >= 6 and self.data[2:6].isdigit():
+                field_size = 1 + int(self.data[2:6])
+            elif len(self.data) >= 5 and self.data[1:5].isdigit():
+                field_size = int(self.data[1:5])
+            else:
+                field_size = 33
+        elif self.data[0:1] in [b'T', b'Y']:
+            field_size = 49
+        elif self.data[0:1] in [b'U', b'X', b'M']:
             field_size = 33
-            self.fields['CVK'] = self.data[0:field_size]
-            self.data = self.data[field_size:]
+        else:
+            field_size = 32
+        self.fields['CVK'] = self.data[0:field_size]
+        self.data = self.data[field_size:]
 
         # CVV
         field_size = 3
@@ -439,6 +464,69 @@ class N0(DummyMessage):
         field_size = 3
         self.fields['Random Value Length'] = self.data[0:field_size]
         self.data = self.data[field_size:]
+
+
+class L0(DummyMessage):
+    """Generate an HMAC Secret Key"""
+    def __init__(self, data):
+        self.data = data
+        self.command_code = b'L0'
+        self.description = 'Generate an HMAC Secret Key'
+        self.fields = OrderedDict()
+        self.fields['Hash Identifier'] = self.data[0:2]
+        self.fields['HMAC Key Usage'] = self.data[2:4]
+        self.fields['HMAC Key Length'] = self.data[4:8]
+        self.fields['HMAC Key Format'] = self.data[8:10]
+        rem = self.data[10:]
+        if b'#' in rem:
+            self.fields['Key Block Spec'] = rem.split(b'#', 1)[1]
+
+
+class LQ(DummyMessage):
+    """Generate an HMAC on a Block of Data"""
+    def __init__(self, data):
+        self.data = data
+        self.command_code = b'LQ'
+        self.description = 'Generate an HMAC on a Block of Data'
+        self.fields = OrderedDict()
+        self.fields['Hash Identifier'] = self.data[0:2]
+        self.fields['HMAC Length'] = self.data[2:6]
+        self.fields['HMAC Key Format'] = self.data[6:8]
+        self.fields['HMAC Key Length'] = self.data[8:12]
+        rem = self.data[12:]
+        if self.fields['HMAC Key Format'] == b'04':
+            kb_len = int(rem[1:5]) if len(rem) >= 5 and rem[1:5].isdigit() else 128
+            self.fields['HMAC Key'] = rem[:kb_len]
+            rem = rem[kb_len:]
+        if rem.startswith(b';'):
+            rem = rem[1:]
+        self.fields['Data Length'] = rem[:5]
+        self.fields['Message Data'] = rem[5:]
+
+
+class LS(DummyMessage):
+    """Verify an HMAC on a Block of Data"""
+    def __init__(self, data):
+        self.data = data
+        self.command_code = b'LS'
+        self.description = 'Verify an HMAC on a Block of Data'
+        self.fields = OrderedDict()
+        self.fields['Hash Identifier'] = self.data[0:2]
+        self.fields['HMAC Length'] = self.data[2:6]
+        hmac_len = int(self.fields['HMAC Length']) if self.fields['HMAC Length'].isdigit() else 32
+        self.fields['HMAC'] = self.data[6:6 + hmac_len]
+        rem = self.data[6 + hmac_len:]
+        self.fields['HMAC Key Format'] = rem[:2]
+        self.fields['HMAC Key Length'] = rem[2:6]
+        rem = rem[6:]
+        if self.fields['HMAC Key Format'] == b'04':
+            kb_len = int(rem[1:5]) if len(rem) >= 5 and rem[1:5].isdigit() else 128
+            self.fields['HMAC Key'] = rem[:kb_len]
+            rem = rem[kb_len:]
+        if rem.startswith(b';'):
+            rem = rem[1:]
+        self.fields['Data Length'] = rem[:5]
+        self.fields['Message Data'] = rem[5:]
 
 
 class OutgoingMessage(DummyMessage):

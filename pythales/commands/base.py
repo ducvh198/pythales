@@ -32,7 +32,7 @@ class BaseCommandHandler(ABC):
             error_code = ErrorCodes.INTERNAL_HARDWARE_ERROR
             resp_payload = b""
 
-        if request_frame.delimiter_present:
+        if request_frame.trailer_bytes:
             resp_payload += b"\x19" + request_frame.trailer_bytes
 
         return ResponseFrame(

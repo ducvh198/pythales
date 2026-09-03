@@ -7,7 +7,10 @@ Data Protection & MAC Command Handlers:
 - M8/M9 (Verify MAC)
 """
 
+import os
 import math
+import hmac
+import hashlib
 from binascii import hexlify, unhexlify
 from typing import Tuple, Optional
 import Crypto.Cipher.DES
@@ -18,7 +21,7 @@ from pythales.commands.base import BaseCommandHandler
 from pythales.commands.key_mgmt import _extract_key_string, _parse_key_payload, KEY_TYPE_VARIANTS
 from pythales.core.router import global_router
 from pythales.core.errors import ErrorCodes, PayShieldException
-from pythales.crypto.keyblock import TR31KeyBlock
+from pythales.crypto.keyblock import TR31KeyBlock, TR31Header
 
 
 def pad_pkcs5(data: bytes, block_size: int = 8) -> bytes:
@@ -173,6 +176,22 @@ def des3_ctr_crypt(key: bytes, data: bytes, iv_bytes: bytes) -> bytes:
     return bytes(output)
 
 
+def aes_ctr_crypt(key: bytes, data: bytes, iv_bytes: bytes) -> bytes:
+    """CTR mode stream encryption/decryption using AES."""
+    block_size = 16
+    iv_int = int.from_bytes(iv_bytes, "big")
+    cipher_ecb = Crypto.Cipher.AES.new(key, Crypto.Cipher.AES.MODE_ECB)
+    output = bytearray()
+    num_blocks = (len(data) + block_size - 1) // block_size
+    for i in range(num_blocks):
+        counter_val = (iv_int + i) % (2 ** (block_size * 8))
+        counter_block = counter_val.to_bytes(block_size, "big")
+        keystream = cipher_ecb.encrypt(counter_block)
+        chunk = data[i * block_size : (i + 1) * block_size]
+        output.extend(bytes(a ^ b for a, b in zip(chunk, keystream)))
+    return bytes(output)
+
+
 def _read_ascii(payload: bytes, pos: int, length: int, error_code: str, name: str) -> Tuple[str, int]:
     if len(payload) < pos + length:
         raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Missing {name}")
@@ -230,31 +249,55 @@ def _parse_exact_m0_m2(hsm, payload: bytes, decrypt: bool = False):
     scheme = chr(payload[pos]).upper()
     if scheme == "U":
         key_field_len = 33
+        key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
+        try:
+            encrypted_key = unhexlify(key_field[1:])
+        except ValueError as exc:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Key contains non-hex data") from exc
+        key_raw = hsm.lmk_engine.decrypt_under_lmk(
+            encrypted_key, variant=KEY_TYPE_VARIANTS[key_type]
+        )
+        key_alg = "T"
     elif scheme == "T":
         key_field_len = 49
+        key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
+        try:
+            encrypted_key = unhexlify(key_field[1:])
+        except ValueError as exc:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Key contains non-hex data") from exc
+        key_raw = hsm.lmk_engine.decrypt_under_lmk(
+            encrypted_key, variant=KEY_TYPE_VARIANTS[key_type]
+        )
+        key_alg = "T"
     elif chr(payload[pos]) in "0123456789ABCDEFabcdef":
         scheme = "Z"
         key_field_len = 16
-    elif scheme == "S":
-        # The Core Guide does not disclose the Thales Key Block algorithm.
-        raise PayShieldException(
-            ErrorCodes.MODE_REQUIRES_AES_KB_LMK if mode == "11" else ErrorCodes.INVALID_KEY_BLOCK,
-            "Thales Key Block cryptography is not emulated as TR-31",
+        key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
+        try:
+            encrypted_key = unhexlify(key_field)
+        except ValueError as exc:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Key contains non-hex data") from exc
+        key_raw = hsm.lmk_engine.decrypt_under_lmk(
+            encrypted_key, variant=KEY_TYPE_VARIANTS[key_type]
         )
+        key_alg = "T"
+    elif scheme in ("S", "R"):
+        if len(payload) < pos + 6:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "TR-31 header too short")
+        block_len_str = payload[pos + 2 : pos + 6].decode("ascii", errors="ignore")
+        if not block_len_str.isdigit():
+            raise PayShieldException(ErrorCodes.INVALID_KEY_BLOCK, f"Invalid TR-31 block length '{block_len_str}'")
+        key_field_len = 1 + int(block_len_str)
+        key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
+        hdr, key_raw = TR31KeyBlock.unwrap(key_field, hsm.LMK)
+        key_alg = hdr.algorithm.upper()
     else:
         raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid Key scheme")
-    key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
-    try:
-        encrypted_key = unhexlify(key_field if scheme == "Z" else key_field[1:])
-    except ValueError as exc:
-        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Key contains non-hex data") from exc
-    key_raw = hsm.lmk_engine.decrypt_under_lmk(
-        encrypted_key, variant=KEY_TYPE_VARIANTS[key_type]
-    )
 
     iv = b""
+    iv_len = 32 if key_alg == "A" else 16
     if mode in ("01", "06"):
-        iv_text, pos = _read_ascii(payload, pos, 16, ErrorCodes.INVALID_INPUT_DATA, "IV")
+        iv_text, pos = _read_ascii(payload, pos, iv_len, ErrorCodes.INVALID_INPUT_DATA, "IV")
         try:
             iv = unhexlify(iv_text)
         except ValueError as exc:
@@ -289,14 +332,15 @@ def _parse_exact_m0_m2(hsm, payload: bytes, decrypt: bool = False):
     else:
         message = message_field
 
-    if mode in ("00", "01") and len(message) % 8:
+    block_size = 16 if key_alg == "A" else 8
+    if mode in ("00", "01") and len(message) % block_size:
         raise PayShieldException(ErrorCodes.INVALID_MESSAGE_LENGTH, "Message is not block aligned")
-    if mode == "06":
+    if mode == "06" and key_alg != "A":
         raise PayShieldException(ErrorCodes.MODE_REQUIRES_AES_KEY, "CTR requires an AES key")
-    if mode == "11":
+    if mode == "11" and (scheme not in ("S", "R") or key_alg != "A"):
         raise PayShieldException(ErrorCodes.MODE_REQUIRES_AES_KB_LMK, "FF1 requires AES Key Block LMK")
 
-    return mode, output_format, key_raw, iv, message, radix, tweak
+    return mode, output_format, key_raw, iv, message, radix, tweak, key_alg
 
 
 def _format_exact_data_response(output_format: str, data: bytes, iv: bytes = b"") -> bytes:
@@ -514,16 +558,40 @@ class M0Handler(BaseCommandHandler):
         Supports modes: '00'/'0' (ECB), '01'/'1' (CBC), '06'/'6' (CTR), '11' (FF1 FPE).
         """
         if payload[:2] in (b"00", b"01", b"06", b"11"):
-            mode, output_format, dek_raw, iv, message, _, _ = _parse_exact_m0_m2(
+            mode, output_format, dek_raw, iv, message, radix, tweak, key_alg = _parse_exact_m0_m2(
                 self.hsm, payload, decrypt=False
             )
-            key = dek_raw + dek_raw[:8] if len(dek_raw) == 16 else dek_raw
-            if mode == "00":
-                encrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_ECB).encrypt(message)
-                response_iv = b""
+            if key_alg == "A":
+                if mode == "00":
+                    encrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_ECB).encrypt(message)
+                    response_iv = b""
+                elif mode == "01":
+                    encrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CBC, iv=iv).encrypt(message)
+                    response_iv = encrypted[-16:]
+                elif mode == "06":
+                    encrypted = aes_ctr_crypt(dek_raw, message, iv)
+                    response_iv = b""
+                elif mode == "11":
+                    ff1 = FF1Cipher(dek_raw, radix=radix, tweak=tweak)
+                    encrypted = ff1.encrypt(message.decode("ascii")).encode("ascii")
+                    response_iv = b""
+                else:
+                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
             else:
-                encrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_CBC, iv=iv).encrypt(message)
-                response_iv = encrypted[-8:]
+                key = dek_raw + dek_raw[:8] if len(dek_raw) == 16 else dek_raw
+                if mode == "00":
+                    encrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_ECB).encrypt(message)
+                    response_iv = b""
+                elif mode == "01":
+                    encrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_CBC, iv=iv).encrypt(message)
+                    response_iv = encrypted[-8:]
+                elif mode == "06":
+                    encrypted = des3_ctr_crypt(dek_raw, message, iv)
+                    response_iv = b""
+                elif mode == "11":
+                    raise PayShieldException(ErrorCodes.MODE_REQUIRES_AES_KB_LMK, "FF1 requires AES Key Block LMK")
+                else:
+                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
             return ErrorCodes.SUCCESS, _format_exact_data_response(output_format, encrypted, response_iv)
 
         payload_str = payload.decode("ascii", errors="ignore")
@@ -531,7 +599,12 @@ class M0Handler(BaseCommandHandler):
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "M0 payload too short")
 
         dek_str, rem = _extract_key_string(payload_str)
-        dek_raw = _get_key_raw(self.hsm, dek_str, default_variant=8)
+        is_aes = False
+        if dek_str.startswith("S"):
+            hdr, dek_raw = TR31KeyBlock.unwrap(dek_str, self.hsm.LMK)
+            is_aes = (hdr.algorithm.upper() == "A")
+        else:
+            dek_raw = _get_key_raw(self.hsm, dek_str, default_variant=8)
 
         mode, data_len, rem = parse_mode_and_datalen(rem)
 
@@ -541,6 +614,26 @@ class M0Handler(BaseCommandHandler):
             ff1 = FF1Cipher(dek_raw, radix=10)
             encrypted_str = ff1.encrypt(raw_text)
             return ErrorCodes.SUCCESS, encrypted_str.encode("ascii")
+
+        if is_aes:
+            has_iv = mode in ("01", "1", "06", "6")
+            data_bytes, rem = parse_payload_data_and_rem(rem, data_len, has_suffix_16=has_iv)
+            iv_hex = rem[:32] if len(rem) >= 32 else "00" * 16
+            iv_bytes = unhexlify(iv_hex)
+
+            if mode in ("00", "0"):
+                padded_data = pad_pkcs5(data_bytes, 16)
+                cipher = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_ECB)
+                encrypted = cipher.encrypt(padded_data)
+            elif mode in ("01", "1"):
+                padded_data = pad_pkcs5(data_bytes, 16)
+                cipher = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CBC, iv=iv_bytes)
+                encrypted = cipher.encrypt(padded_data)
+            elif mode in ("06", "6"):
+                encrypted = aes_ctr_crypt(dek_raw, data_bytes, iv_bytes)
+            else:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
+            return ErrorCodes.SUCCESS, hexlify(encrypted).upper()
 
         if len(dek_raw) == 16:
             dek_raw = dek_raw + dek_raw[:8]
@@ -575,16 +668,40 @@ class M2Handler(BaseCommandHandler):
         Supports modes: '00'/'0' (ECB), '01'/'1' (CBC), '06'/'6' (CTR), '11' (FF1 FPE).
         """
         if payload[:2] in (b"00", b"01", b"06", b"11"):
-            mode, output_format, dek_raw, iv, message, _, _ = _parse_exact_m0_m2(
+            mode, output_format, dek_raw, iv, message, radix, tweak, key_alg = _parse_exact_m0_m2(
                 self.hsm, payload, decrypt=True
             )
-            key = dek_raw + dek_raw[:8] if len(dek_raw) == 16 else dek_raw
-            if mode == "00":
-                decrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_ECB).decrypt(message)
-                response_iv = b""
+            if key_alg == "A":
+                if mode == "00":
+                    decrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_ECB).decrypt(message)
+                    response_iv = b""
+                elif mode == "01":
+                    decrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CBC, iv=iv).decrypt(message)
+                    response_iv = message[-16:]
+                elif mode == "06":
+                    decrypted = aes_ctr_crypt(dek_raw, message, iv)
+                    response_iv = b""
+                elif mode == "11":
+                    ff1 = FF1Cipher(dek_raw, radix=radix, tweak=tweak)
+                    decrypted = ff1.decrypt(message.decode("ascii")).encode("ascii")
+                    response_iv = b""
+                else:
+                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
             else:
-                decrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_CBC, iv=iv).decrypt(message)
-                response_iv = message[-8:]
+                key = dek_raw + dek_raw[:8] if len(dek_raw) == 16 else dek_raw
+                if mode == "00":
+                    decrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_ECB).decrypt(message)
+                    response_iv = b""
+                elif mode == "01":
+                    decrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_CBC, iv=iv).decrypt(message)
+                    response_iv = message[-8:]
+                elif mode == "06":
+                    decrypted = des3_ctr_crypt(dek_raw, message, iv)
+                    response_iv = b""
+                elif mode == "11":
+                    raise PayShieldException(ErrorCodes.MODE_REQUIRES_AES_KB_LMK, "FF1 requires AES Key Block LMK")
+                else:
+                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
             return ErrorCodes.SUCCESS, _format_exact_data_response(output_format, decrypted, response_iv)
 
         payload_str = payload.decode("ascii", errors="ignore")
@@ -592,7 +709,12 @@ class M2Handler(BaseCommandHandler):
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "M2 payload too short")
 
         dek_str, rem = _extract_key_string(payload_str)
-        dek_raw = _get_key_raw(self.hsm, dek_str, default_variant=8)
+        is_aes = False
+        if dek_str.startswith("S"):
+            hdr, dek_raw = TR31KeyBlock.unwrap(dek_str, self.hsm.LMK)
+            is_aes = (hdr.algorithm.upper() == "A")
+        else:
+            dek_raw = _get_key_raw(self.hsm, dek_str, default_variant=8)
 
         mode, data_len, rem = parse_mode_and_datalen(rem)
 
@@ -601,6 +723,30 @@ class M2Handler(BaseCommandHandler):
             ff1 = FF1Cipher(dek_raw, radix=10)
             decrypted_str = ff1.decrypt(raw_text)
             return ErrorCodes.SUCCESS, decrypted_str.encode("ascii")
+
+        if is_aes:
+            has_iv = mode in ("01", "1", "06", "6")
+            try:
+                encrypted_bytes = unhexlify(rem[: data_len * 2])
+                rem = rem[data_len * 2 :]
+            except Exception:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid hex data in M2 payload")
+            iv_hex = rem[:32] if len(rem) >= 32 else "00" * 16
+            iv_bytes = unhexlify(iv_hex)
+
+            if mode in ("00", "0"):
+                cipher = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_ECB)
+                decrypted_padded = cipher.decrypt(encrypted_bytes)
+                decrypted = unpad_pkcs5(decrypted_padded)
+            elif mode in ("01", "1"):
+                cipher = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CBC, iv=iv_bytes)
+                decrypted_padded = cipher.decrypt(encrypted_bytes)
+                decrypted = unpad_pkcs5(decrypted_padded)
+            elif mode in ("06", "6"):
+                decrypted = aes_ctr_crypt(dek_raw, encrypted_bytes, iv_bytes)
+            else:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
+            return ErrorCodes.SUCCESS, hexlify(decrypted).upper()
 
         if len(dek_raw) == 16:
             dek_raw = dek_raw + dek_raw[:8]
@@ -783,3 +929,230 @@ class M8Handler(BaseCommandHandler):
             raise PayShieldException(ErrorCodes.KCV_MISMATCH, f"MAC verification failed: computed '{computed_hex}' != '{mac_to_verify}'")
 
         return ErrorCodes.SUCCESS, b""
+
+
+HASH_ALGO_BY_USAGE = {
+    "61": hashlib.sha1,
+    "62": hashlib.sha224,
+    "63": hashlib.sha256,
+    "64": hashlib.sha384,
+    "65": hashlib.sha512,
+}
+
+HASH_ALGO_BY_ID = {
+    "01": hashlib.sha1,
+    "05": hashlib.sha224,
+    "06": hashlib.sha256,
+    "07": hashlib.sha384,
+    "08": hashlib.sha512,
+}
+
+
+@global_router.register("L0")
+class L0Handler(BaseCommandHandler):
+    """
+    L0 Generate an HMAC Secret Key.
+    Returns L1 + '00' + Key Length ('FFFF' for Key Block) + HMAC Key Block (without scheme prefix).
+    """
+    def handle_payload(self, payload: bytes) -> Tuple[str, bytes]:
+        payload_str = payload.decode("ascii", errors="ignore")
+        if len(payload_str) < 10:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "L0 payload too short")
+
+        hash_id = payload_str[:2]
+        hmac_usage = payload_str[2:4]
+        try:
+            key_len_bytes = int(payload_str[4:8])
+        except ValueError:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Invalid HMAC key length field: {payload_str[4:8]}")
+        key_format = payload_str[8:10]
+
+        rem = payload_str[10:]
+        if "%" in rem:
+            rem = rem.split("%", 1)[0]
+        if "\x19" in rem:
+            rem = rem.split("\x19", 1)[0]
+
+        key_usage = "63"
+        algorithm = "H0"
+        mode_of_use = "C"
+        key_version = "00"
+        exportability = "E"
+
+        if "#" in rem:
+            spec = rem.split("#", 1)[1]
+            if len(spec) >= 2:
+                key_usage = spec[:2]
+            if len(spec) >= 4:
+                algorithm = spec[2:4]
+            if len(spec) >= 5:
+                mode_of_use = spec[4]
+            if len(spec) >= 7:
+                key_version = spec[5:7]
+            if len(spec) >= 8:
+                exportability = spec[7]
+
+        raw_key = os.urandom(key_len_bytes)
+
+        if key_format == "04" or "#" in payload_str:
+            hdr = TR31Header(
+                version_id="1",
+                key_length=128,
+                key_usage=key_usage,
+                algorithm="H",
+                mode_of_use=mode_of_use,
+                key_version=key_version,
+                exportability=exportability,
+                optional_headers=b"",
+                lmk_identifier="00",
+            )
+            key_block = TR31KeyBlock.wrap(raw_key, hdr, self.hsm.LMK)
+            resp_payload = b"FFFF" + key_block
+        else:
+            enc_key = self.hsm.lmk_engine.encrypt_under_lmk(raw_key, variant=1)
+            resp_payload = f"{key_len_bytes:04d}".encode("ascii") + enc_key
+
+        return ErrorCodes.SUCCESS, resp_payload
+
+
+@global_router.register("LQ")
+class LQHandler(BaseCommandHandler):
+    """
+    LQ Generate an HMAC on a Block of Data.
+    Returns LR + '00' + HMAC Length (4 N) + HMAC (n B raw bytes).
+    """
+    def handle_payload(self, payload: bytes) -> Tuple[str, bytes]:
+        if len(payload) < 17:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "LQ payload too short")
+
+        try:
+            hash_id = payload[:2].decode("ascii")
+            hmac_len = int(payload[2:6].decode("ascii"))
+            key_format = payload[6:8].decode("ascii")
+            key_len_field = payload[8:12].decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Invalid LQ header fields: {exc}")
+
+        rem = payload[12:]
+
+        if key_format == "04":
+            if rem.startswith((b"S", b"R")):
+                kb_len = 1 + int(rem[2:6].decode("ascii"))
+            else:
+                kb_len = int(rem[1:5].decode("ascii"))
+            key_bytes_block = rem[:kb_len]
+            rem_after_key = rem[kb_len:]
+
+            if rem_after_key.startswith(b";"):
+                rem_after_key = rem_after_key[1:]
+
+            if len(rem_after_key) < 5:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing data length in LQ payload")
+
+            try:
+                data_len = int(rem_after_key[:5].decode("ascii"))
+            except ValueError:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid data length in LQ payload")
+
+            message_data = rem_after_key[5:5 + data_len]
+
+            hdr, clear_key = TR31KeyBlock.unwrap(key_bytes_block.decode("ascii"), self.hsm.LMK)
+            hash_func = HASH_ALGO_BY_USAGE.get(hdr.key_usage, hashlib.sha256)
+        else:
+            try:
+                enc_key_len = int(key_len_field)
+            except ValueError:
+                enc_key_len = 32
+            enc_key = rem[:enc_key_len]
+            rem_after_key = rem[enc_key_len:]
+            if rem_after_key.startswith(b";"):
+                rem_after_key = rem_after_key[1:]
+            data_len = int(rem_after_key[:5].decode("ascii"))
+            message_data = rem_after_key[5:5 + data_len]
+            clear_key = self.hsm.lmk_engine.decrypt_under_lmk(enc_key, variant=1)
+            hash_func = HASH_ALGO_BY_ID.get(hash_id, hashlib.sha256)
+
+        mac = hmac.new(clear_key, message_data, hash_func).digest()
+        if hmac_len < len(mac):
+            mac = mac[:hmac_len]
+
+        hmac_len_str = f"{hmac_len:04d}".encode("ascii")
+        return ErrorCodes.SUCCESS, hmac_len_str + mac
+
+
+@global_router.register("LS")
+class LSHandler(BaseCommandHandler):
+    """
+    LS Verify an HMAC on a Block of Data.
+    Payload: HashId (2) + HMACLen (4) + HMAC (t bytes) + KeyFormat (2) + KeyLen (4) + Key + [;] + DataLen (5) + Data
+    Returns LT + '00' on success, LT + '01' on failure.
+    """
+    def handle_payload(self, payload: bytes) -> Tuple[str, bytes]:
+        if len(payload) < 20:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "LS payload too short")
+
+        try:
+            hash_id = payload[:2].decode("ascii")
+            hmac_len = int(payload[2:6].decode("ascii"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Invalid LS header: {exc}")
+
+        if len(payload) < 6 + hmac_len + 6:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "LS payload too short for specified HMAC length")
+
+        supplied_hmac = payload[6:6 + hmac_len]
+        rem = payload[6 + hmac_len:]
+
+        try:
+            key_format = rem[:2].decode("ascii")
+            key_len_field = rem[2:6].decode("ascii")
+        except UnicodeDecodeError:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid key format or length in LS")
+
+        rem_key = rem[6:]
+
+        if key_format == "04":
+            if rem_key.startswith((b"S", b"R")):
+                kb_len = 1 + int(rem_key[2:6].decode("ascii"))
+            else:
+                kb_len = int(rem_key[1:5].decode("ascii"))
+            key_bytes_block = rem_key[:kb_len]
+            rem_after_key = rem_key[kb_len:]
+
+            if rem_after_key.startswith(b";"):
+                rem_after_key = rem_after_key[1:]
+
+            if len(rem_after_key) < 5:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing data length in LS payload")
+
+            try:
+                data_len = int(rem_after_key[:5].decode("ascii"))
+            except ValueError:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid data length in LS payload")
+
+            message_data = rem_after_key[5:5 + data_len]
+
+            hdr, clear_key = TR31KeyBlock.unwrap(key_bytes_block.decode("ascii"), self.hsm.LMK)
+            hash_func = HASH_ALGO_BY_USAGE.get(hdr.key_usage, hashlib.sha256)
+        else:
+            try:
+                enc_key_len = int(key_len_field)
+            except ValueError:
+                enc_key_len = 32
+            enc_key = rem_key[:enc_key_len]
+            rem_after_key = rem_key[enc_key_len:]
+            if rem_after_key.startswith(b";"):
+                rem_after_key = rem_after_key[1:]
+            data_len = int(rem_after_key[:5].decode("ascii"))
+            message_data = rem_after_key[5:5 + data_len]
+            clear_key = self.hsm.lmk_engine.decrypt_under_lmk(enc_key, variant=1)
+            hash_func = HASH_ALGO_BY_ID.get(hash_id, hashlib.sha256)
+
+        expected_mac = hmac.new(clear_key, message_data, hash_func).digest()
+        if hmac_len < len(expected_mac):
+            expected_mac = expected_mac[:hmac_len]
+
+        if hmac.compare_digest(expected_mac, supplied_hmac):
+            return ErrorCodes.SUCCESS, b""
+        else:
+            return ErrorCodes.VERIFICATION_FAILURE, b""

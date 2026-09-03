@@ -258,13 +258,14 @@ class TR31KeyBlock:
         key_bits = len(key_bytes) * 8
         payload = struct.pack(">H", key_bits) + key_bytes
 
-        block_size = 16 if hdr_obj.algorithm == "A" else 8
+        use_aes = (hdr_obj.version_id == "1") or hdr_obj.algorithm == "A" or len(k_enc) == 32
+        block_size = 16 if use_aes else 8
         pad_len = block_size - (len(payload) % block_size)
         if pad_len != block_size:
             payload += b"\x00" * pad_len
 
         # Encrypt payload
-        if hdr_obj.algorithm == "A" or len(k_enc) == 32:
+        if use_aes:
             cipher = Crypto.Cipher.AES.new(k_enc[:16], Crypto.Cipher.AES.MODE_CBC, iv=b"\x00" * 16)
         else:
             cipher = Crypto.Cipher.DES3.new(k_enc[:16] if len(k_enc) == 16 else k_enc[:24], Crypto.Cipher.DES3.MODE_CBC, iv=b"\x00" * 8)
@@ -283,7 +284,7 @@ class TR31KeyBlock:
         # MAC calculation over Header ASCII + Encrypted Payload HEX
         mac_data = hdr_bytes + enc_payload_hex
 
-        if hdr_obj.algorithm == "A" or len(k_mac) == 32:
+        if use_aes:
             mac_cipher = Crypto.Cipher.AES.new(k_mac[:16], Crypto.Cipher.AES.MODE_CBC, iv=b"\x00" * 16)
             mac_pad = 16 - (len(mac_data) % 16)
             if mac_pad != 16:
@@ -417,7 +418,8 @@ class TR31KeyBlock:
         # Verify MAC over full header ASCII + enc_payload_hex
         mac_data = hdr_str.encode("ascii") + enc_payload_hex
 
-        if hdr_obj.algorithm == "A" or len(k_mac) == 32:
+        use_aes = (hdr_obj.version_id == "1") or hdr_obj.algorithm == "A" or len(k_mac) == 32
+        if use_aes:
             mac_cipher = Crypto.Cipher.AES.new(k_mac[:16], Crypto.Cipher.AES.MODE_CBC, iv=b"\x00" * 16)
             mac_pad = 16 - (len(mac_data) % 16)
             if mac_pad != 16:
@@ -439,7 +441,7 @@ class TR31KeyBlock:
             )
 
         # Decrypt payload
-        if hdr_obj.algorithm == "A" or len(k_enc) == 32:
+        if use_aes:
             cipher = Crypto.Cipher.AES.new(k_enc[:16], Crypto.Cipher.AES.MODE_CBC, iv=b"\x00" * 16)
         else:
             cipher = Crypto.Cipher.DES3.new(k_enc[:16] if len(k_enc) == 16 else k_enc[:24], Crypto.Cipher.DES3.MODE_CBC, iv=b"\x00" * 8)

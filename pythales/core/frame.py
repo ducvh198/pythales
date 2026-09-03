@@ -72,7 +72,36 @@ class MessageFraming:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Command code is not ASCII") from exc
 
         rem = body[2:]
-        delim_pos = rem.find(b"\x19")
+        delim_pos = -1
+        if command_code == "LS" and len(rem) >= 12:
+            try:
+                hmac_len = int(rem[2:6].decode("ascii"))
+                offset = 6 + hmac_len
+                key_fmt = rem[offset:offset + 2]
+                offset += 6
+                if key_fmt == b"04":
+                    if rem[offset:offset + 1] in (b"S", b"R"):
+                        kb_len = 1 + int(rem[offset + 2:offset + 6].decode("ascii"))
+                    else:
+                        kb_len = int(rem[offset + 1:offset + 5].decode("ascii"))
+                    offset += kb_len
+                else:
+                    offset += 32
+                if rem[offset:offset + 1] == b";":
+                    offset += 1
+                data_len = int(rem[offset:offset + 5].decode("ascii"))
+                offset += 5 + data_len
+                if len(rem) > offset and rem[offset:offset + 1] == b"\x19":
+                    delim_pos = offset
+                elif len(rem) == offset:
+                    delim_pos = -1
+                else:
+                    delim_pos = rem.find(b"\x19", offset)
+            except Exception:
+                delim_pos = rem.find(b"\x19")
+        else:
+            delim_pos = rem.find(b"\x19")
+
         if delim_pos != -1:
             payload_bytes = rem[:delim_pos]
             delimiter_present = True
