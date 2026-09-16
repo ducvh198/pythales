@@ -158,38 +158,126 @@ def _get_key_raw(hsm, key_str: str, default_variant: int = 8) -> bytes:
     return hsm.lmk_engine.decrypt_under_lmk(enc_bytes, variant=default_variant)
 
 
-def des3_ctr_crypt(key: bytes, data: bytes, iv_bytes: bytes) -> bytes:
-    """CTR mode stream encryption/decryption using 3DES."""
+def _get_des_cipher(key: bytes, mode, iv: Optional[bytes] = None, segment_size: Optional[int] = None):
+    """
+    Return DES or DES3 cipher object appropriately.
+    Handles single DES (8 bytes), double DES (16 bytes), triple DES (24 bytes),
+    and degenerate keys without throwing ValueError in PyCryptodome.
+    """
+    kwargs = {}
+    if iv is not None:
+        kwargs["iv"] = iv
+    if segment_size is not None:
+        kwargs["segment_size"] = segment_size
+
+    if len(key) == 8:
+        return Crypto.Cipher.DES.new(key, mode, **kwargs)
+    elif len(key) == 16:
+        if key[:8] == key[8:]:
+            return Crypto.Cipher.DES.new(key[:8], mode, **kwargs)
+        return Crypto.Cipher.DES3.new(key + key[:8], mode, **kwargs)
+    else:
+        if key[:8] == key[8:16] == key[16:]:
+            return Crypto.Cipher.DES.new(key[:8], mode, **kwargs)
+        elif key[:8] == key[8:16]:
+            return Crypto.Cipher.DES.new(key[16:], mode, **kwargs)
+        elif key[8:16] == key[16:]:
+            return Crypto.Cipher.DES.new(key[:8], mode, **kwargs)
+        return Crypto.Cipher.DES3.new(key, mode, **kwargs)
+
+
+def des3_ctr_crypt(key: bytes, data: bytes, iv_bytes: bytes, offset: int = 0, length: int = 64) -> bytes:
+    """CTR mode stream encryption/decryption using 3DES/DES."""
     block_size = 8
     iv_int = int.from_bytes(iv_bytes, "big")
-    if len(key) == 16:
-        key = key + key[:8]
-    cipher_ecb = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_ECB)
+    mask = ((1 << length) - 1) << offset
+    counter_val = (iv_int >> offset) & ((1 << length) - 1)
+    iv_base = iv_int & ~mask
+    cipher_ecb = _get_des_cipher(key, Crypto.Cipher.DES.MODE_ECB if len(key) == 8 else Crypto.Cipher.DES3.MODE_ECB)
     output = bytearray()
     num_blocks = (len(data) + block_size - 1) // block_size
     for i in range(num_blocks):
-        counter_val = (iv_int + i) % (2 ** (block_size * 8))
-        counter_block = counter_val.to_bytes(block_size, "big")
+        current_counter = (counter_val + i) % (1 << length)
+        block_iv_int = iv_base | (current_counter << offset)
+        counter_block = block_iv_int.to_bytes(block_size, "big")
         keystream = cipher_ecb.encrypt(counter_block)
         chunk = data[i * block_size : (i + 1) * block_size]
         output.extend(bytes(a ^ b for a, b in zip(chunk, keystream)))
     return bytes(output)
 
 
-def aes_ctr_crypt(key: bytes, data: bytes, iv_bytes: bytes) -> bytes:
+def aes_ctr_crypt(key: bytes, data: bytes, iv_bytes: bytes, offset: int = 0, length: int = 128) -> bytes:
     """CTR mode stream encryption/decryption using AES."""
     block_size = 16
     iv_int = int.from_bytes(iv_bytes, "big")
+    mask = ((1 << length) - 1) << offset
+    counter_val = (iv_int >> offset) & ((1 << length) - 1)
+    iv_base = iv_int & ~mask
     cipher_ecb = Crypto.Cipher.AES.new(key, Crypto.Cipher.AES.MODE_ECB)
     output = bytearray()
     num_blocks = (len(data) + block_size - 1) // block_size
     for i in range(num_blocks):
-        counter_val = (iv_int + i) % (2 ** (block_size * 8))
-        counter_block = counter_val.to_bytes(block_size, "big")
+        current_counter = (counter_val + i) % (1 << length)
+        block_iv_int = iv_base | (current_counter << offset)
+        counter_block = block_iv_int.to_bytes(block_size, "big")
         keystream = cipher_ecb.encrypt(counter_block)
         chunk = data[i * block_size : (i + 1) * block_size]
         output.extend(bytes(a ^ b for a, b in zip(chunk, keystream)))
     return bytes(output)
+
+
+def calc_ctr_output_iv(iv_bytes: bytes, data_len: int, block_size: int, offset: int, length: int) -> bytes:
+    """Calculate updated counter IV after processing data_len bytes."""
+    num_blocks = (data_len + block_size - 1) // block_size
+    iv_int = int.from_bytes(iv_bytes, "big")
+    mask = ((1 << length) - 1) << offset
+    counter_val = (iv_int >> offset) & ((1 << length) - 1)
+    iv_base = iv_int & ~mask
+    next_counter = (counter_val + num_blocks) % (1 << length)
+    return (iv_base | (next_counter << offset)).to_bytes(block_size, "big")
+
+
+def _ofb_crypt(key: bytes, data: bytes, iv: bytes, key_alg: str) -> Tuple[bytes, bytes]:
+    """OFB mode stream encryption/decryption and chaining IV calculation."""
+    block_size = 16 if key_alg == "A" else 8
+    if key_alg == "A":
+        cipher_ecb = Crypto.Cipher.AES.new(key, Crypto.Cipher.AES.MODE_ECB)
+    else:
+        cipher_ecb = _get_des_cipher(key, Crypto.Cipher.DES.MODE_ECB if len(key) == 8 else Crypto.Cipher.DES3.MODE_ECB)
+    output = bytearray()
+    cur_iv = iv
+    num_blocks = (len(data) + block_size - 1) // block_size
+    for i in range(num_blocks):
+        cur_iv = cipher_ecb.encrypt(cur_iv)
+        chunk = data[i * block_size : (i + 1) * block_size]
+        output.extend(bytes(a ^ b for a, b in zip(chunk, cur_iv)))
+    return bytes(output), cur_iv
+
+
+def _is_exact_wire_format(payload: bytes) -> bool:
+    """Detect whether payload follows standard payShield 10K wire layout."""
+    if len(payload) < 4:
+        return False
+    # Legacy payloads start with key scheme prefix (U, T, S, R, X, Y)
+    if chr(payload[0]).upper() in ("U", "T", "S", "R", "X", "Y"):
+        return False
+    # If starting with FF1 / BPS mode: Mode (10 or 11) + Radix Flag ('A' or 'U')
+    if payload[:2] in (b"10", b"11") and len(payload) >= 3 and payload[2:3].upper() in (b"A", b"U"):
+        return True
+    # Key Type at offset 4..7
+    if len(payload) >= 7:
+        kt = payload[4:7].decode("ascii", errors="ignore").upper()
+        if kt in ("00A", "00B", "30B", "FFF", "009", "609", "809", "909"):
+            return True
+    # Standard format: Mode + InFmt + OutFmt
+    if payload[:2] in (b"00", b"01", b"02", b"03", b"04", b"05", b"06", b"10", b"11", b"13"):
+        if payload[2:3] in (b"0", b"1", b"2") and payload[3:4] in (b"0", b"1", b"2"):
+            return True
+    if len(payload) >= 7 and payload[2:3] in (b"0", b"1", b"2") and payload[3:4] in (b"0", b"1", b"2"):
+        kt = payload[4:7].decode("ascii", errors="ignore").upper()
+        if kt in ("00A", "00B", "30B", "FFF", "009", "609", "809", "909"):
+            return True
+    return False
 
 
 def _read_ascii(payload: bytes, pos: int, length: int, error_code: str, name: str) -> Tuple[str, int]:
@@ -205,31 +293,41 @@ def _parse_exact_m0_m2(hsm, payload: bytes, decrypt: bool = False):
     """Parse the Core Guide M0/M2 wire layout for the implemented modes."""
     pos = 0
     mode, pos = _read_ascii(payload, pos, 2, ErrorCodes.INVALID_MODE, "Mode Flag")
-    if mode not in ("00", "01", "06", "11"):
+    if mode in ("04", "13"):
+        raise PayShieldException(ErrorCodes.COMMAND_NOT_LICENSED, "Visa encryption requires license PS10-LIC-VDSP")
+    if mode not in ("00", "01", "02", "03", "05", "06", "10", "11"):
         raise PayShieldException(ErrorCodes.INVALID_MODE, f"Unsupported Mode Flag '{mode}'")
 
     radix = None
     tweak = b""
-    if mode == "11":
+    if mode in ("10", "11"):
         radix_flag, pos = _read_ascii(payload, pos, 1, ErrorCodes.INVALID_INPUT_DATA, "FPE Radix Flag")
         if radix_flag == "A":
             radix = 10
         elif radix_flag == "U":
-            radix_text, pos = _read_ascii(payload, pos, 5, ErrorCodes.INVALID_INPUT_DATA, "FPE Radix Value")
+            radix_len = 3 if mode == "10" else 5
+            radix_text, pos = _read_ascii(payload, pos, radix_len, ErrorCodes.INVALID_INPUT_DATA, "FPE Radix Value")
             if not radix_text.isdigit() or not 2 <= int(radix_text) <= 256:
                 raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "FPE radix must be 00002..00256")
             radix = int(radix_text)
         else:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid FPE Radix Flag")
-        tweak_len_text, pos = _read_ascii(payload, pos, 4, ErrorCodes.INVALID_INPUT_DATA, "FPE Tweak Length")
-        try:
-            tweak_len = int(tweak_len_text, 16)
-        except ValueError as exc:
-            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid FPE Tweak Length") from exc
-        if len(payload) < pos + tweak_len:
-            raise PayShieldException(ErrorCodes.DATA_LENGTH_ERROR, "FPE Tweak is shorter than declared")
-        tweak = payload[pos:pos + tweak_len]
-        pos += tweak_len
+
+        if mode == "10":
+            if len(payload) < pos + 8:
+                raise PayShieldException(ErrorCodes.DATA_LENGTH_ERROR, "BPS Tweak is shorter than declared")
+            tweak = payload[pos:pos + 8]
+            pos += 8
+        else:
+            tweak_len_text, pos = _read_ascii(payload, pos, 4, ErrorCodes.INVALID_INPUT_DATA, "FPE Tweak Length")
+            try:
+                tweak_len = int(tweak_len_text, 16)
+            except ValueError as exc:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid FPE Tweak Length") from exc
+            if len(payload) < pos + tweak_len:
+                raise PayShieldException(ErrorCodes.DATA_LENGTH_ERROR, "FPE Tweak is shorter than declared")
+            tweak = payload[pos:pos + tweak_len]
+            pos += tweak_len
 
     input_format, pos = _read_ascii(payload, pos, 1, ErrorCodes.INVALID_INPUT_FORMAT, "Input Format Flag")
     valid_input = ("0", "1") if decrypt else ("0", "1", "2")
@@ -241,45 +339,40 @@ def _parse_exact_m0_m2(hsm, payload: bytes, decrypt: bool = False):
         raise PayShieldException(ErrorCodes.INVALID_OUTPUT_FORMAT, "Invalid Output Format Flag")
 
     key_type, pos = _read_ascii(payload, pos, 3, ErrorCodes.INVALID_COMMAND_KEY_TYPE, "Key Type")
-    if key_type not in ("00A", "00B", "30B", "FFF"):
+    if key_type not in ("00A", "00B", "30B", "FFF", "009", "609", "809", "909"):
         raise PayShieldException(ErrorCodes.INVALID_COMMAND_KEY_TYPE, f"Invalid M0/M2 Key Type '{key_type}'")
 
     if len(payload) <= pos:
         raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing Key")
     scheme = chr(payload[pos]).upper()
-    if scheme == "U":
+    variant = KEY_TYPE_VARIANTS.get(key_type, 8)
+
+    if scheme in ("U", "X"):
         key_field_len = 33
         key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
         try:
             encrypted_key = unhexlify(key_field[1:])
         except ValueError as exc:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Key contains non-hex data") from exc
-        key_raw = hsm.lmk_engine.decrypt_under_lmk(
-            encrypted_key, variant=KEY_TYPE_VARIANTS[key_type]
-        )
+        key_raw = hsm.lmk_engine.decrypt_under_lmk(encrypted_key, variant=variant)
         key_alg = "T"
-    elif scheme == "T":
+    elif scheme in ("T", "Y"):
         key_field_len = 49
         key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
         try:
             encrypted_key = unhexlify(key_field[1:])
         except ValueError as exc:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Key contains non-hex data") from exc
-        key_raw = hsm.lmk_engine.decrypt_under_lmk(
-            encrypted_key, variant=KEY_TYPE_VARIANTS[key_type]
-        )
+        key_raw = hsm.lmk_engine.decrypt_under_lmk(encrypted_key, variant=variant)
         key_alg = "T"
-    elif chr(payload[pos]) in "0123456789ABCDEFabcdef":
-        scheme = "Z"
-        key_field_len = 16
+    elif scheme == "Z":
+        key_field_len = 17
         key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
         try:
-            encrypted_key = unhexlify(key_field)
+            encrypted_key = unhexlify(key_field[1:])
         except ValueError as exc:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Key contains non-hex data") from exc
-        key_raw = hsm.lmk_engine.decrypt_under_lmk(
-            encrypted_key, variant=KEY_TYPE_VARIANTS[key_type]
-        )
+        key_raw = hsm.lmk_engine.decrypt_under_lmk(encrypted_key, variant=variant)
         key_alg = "T"
     elif scheme in ("S", "R"):
         if len(payload) < pos + 6:
@@ -291,30 +384,58 @@ def _parse_exact_m0_m2(hsm, payload: bytes, decrypt: bool = False):
         key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
         hdr, key_raw = TR31KeyBlock.unwrap(key_field, hsm.LMK)
         key_alg = hdr.algorithm.upper()
+    elif all(chr(c) in "0123456789ABCDEFabcdef" for c in payload[pos : pos + 16]):
+        key_field_len = 16
+        key_field, pos = _read_ascii(payload, pos, key_field_len, ErrorCodes.INVALID_INPUT_DATA, "Key")
+        try:
+            encrypted_key = unhexlify(key_field)
+        except ValueError as exc:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Key contains non-hex data") from exc
+        key_raw = hsm.lmk_engine.decrypt_under_lmk(encrypted_key, variant=variant)
+        key_alg = "T"
     else:
         raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid Key scheme")
 
     iv = b""
     iv_len = 32 if key_alg == "A" else 16
-    if mode in ("01", "06"):
+    if mode in ("01", "02", "03", "05", "06"):
         iv_text, pos = _read_ascii(payload, pos, iv_len, ErrorCodes.INVALID_INPUT_DATA, "IV")
         try:
             iv = unhexlify(iv_text)
         except ValueError as exc:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "IV contains non-hex data") from exc
-    if mode == "06":
-        _, pos = _read_ascii(payload, pos, 3, ErrorCodes.INVALID_INPUT_DATA, "Counter Offset")
-        counter_length, pos = _read_ascii(payload, pos, 3, ErrorCodes.INVALID_INPUT_DATA, "Counter Length")
-        if not counter_length.isdigit() or int(counter_length) < 8:
-            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Counter Length must be at least 008")
 
-    length_text, pos = _read_ascii(payload, pos, 4, ErrorCodes.INVALID_INPUT_DATA, "Message Length")
+    ofb_mode_flag = "1"
+    if mode == "05":
+        ofb_mode_flag, pos = _read_ascii(payload, pos, 1, ErrorCodes.INVALID_INPUT_DATA, "OFB Mode Flag")
+        if ofb_mode_flag not in ("1", "8"):
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "OFB Mode Flag must be 1 or 8")
+
+    counter_offset = 0
+    counter_length = 128 if key_alg == "A" else 64
+    if mode == "06":
+        counter_offset_str, pos = _read_ascii(payload, pos, 3, ErrorCodes.INVALID_INPUT_DATA, "Counter Offset")
+        counter_length_str, pos = _read_ascii(payload, pos, 3, ErrorCodes.INVALID_INPUT_DATA, "Counter Length")
+        if not counter_offset_str.isdigit() or not counter_length_str.isdigit():
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Counter Offset and Length must be numeric")
+        counter_offset = int(counter_offset_str)
+        counter_length = int(counter_length_str)
+        if counter_length < 8:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Counter Length must be at least 008")
+        max_bits = 128 if key_alg == "A" else 64
+        if counter_offset + counter_length > max_bits:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Counter window exceeds IV bits")
+
+    length_text, pos = _read_ascii(payload, pos, 4, ErrorCodes.INVALID_MESSAGE_LENGTH, "Message Length")
     try:
         message_length = int(length_text, 16)
     except ValueError as exc:
-        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid Message Length") from exc
+        raise PayShieldException(ErrorCodes.INVALID_MESSAGE_LENGTH, "Invalid Message Length") from exc
+    if message_length > 0x7D00:
+        raise PayShieldException(ErrorCodes.INVALID_MESSAGE_LENGTH, "Message Length exceeds maximum 32000 bytes")
     if message_length == 0:
         raise PayShieldException(ErrorCodes.DATA_LENGTH_ERROR, "Message Length cannot be zero")
+
     encoded_length = message_length * 2 if input_format == "1" else message_length
     available = len(payload) - pos
     if available < encoded_length:
@@ -322,8 +443,9 @@ def _parse_exact_m0_m2(hsm, payload: bytes, decrypt: bool = False):
     message_field = payload[pos:pos + encoded_length]
     pos += encoded_length
     trailing = payload[pos:]
-    if trailing and not (len(trailing) == 3 and trailing[:1] == b"%" and trailing[1:].isdigit()):
+    if trailing and not (trailing.startswith(b"%") and len(trailing) >= 3 and trailing[1:3].isdigit()):
         raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Message is longer than declared")
+
     if input_format == "1":
         try:
             message = unhexlify(message_field)
@@ -335,12 +457,14 @@ def _parse_exact_m0_m2(hsm, payload: bytes, decrypt: bool = False):
     block_size = 16 if key_alg == "A" else 8
     if mode in ("00", "01") and len(message) % block_size:
         raise PayShieldException(ErrorCodes.INVALID_MESSAGE_LENGTH, "Message is not block aligned")
+    if mode == "03" and len(message) % 8:
+        raise PayShieldException(ErrorCodes.INVALID_MESSAGE_LENGTH, "Message is not block aligned")
     if mode == "06" and key_alg != "A":
         raise PayShieldException(ErrorCodes.MODE_REQUIRES_AES_KEY, "CTR requires an AES key")
     if mode == "11" and (scheme not in ("S", "R") or key_alg != "A"):
         raise PayShieldException(ErrorCodes.MODE_REQUIRES_AES_KB_LMK, "FF1 requires AES Key Block LMK")
 
-    return mode, output_format, key_raw, iv, message, radix, tweak, key_alg
+    return mode, output_format, key_raw, iv, message, radix, tweak, key_alg, ofb_mode_flag, counter_offset, counter_length
 
 
 def _format_exact_data_response(output_format: str, data: bytes, iv: bytes = b"") -> bytes:
@@ -557,8 +681,8 @@ class M0Handler(BaseCommandHandler):
         M0 Encrypt Data Handler.
         Supports modes: '00'/'0' (ECB), '01'/'1' (CBC), '06'/'6' (CTR), '11' (FF1 FPE).
         """
-        if payload[:2] in (b"00", b"01", b"06", b"11"):
-            mode, output_format, dek_raw, iv, message, radix, tweak, key_alg = _parse_exact_m0_m2(
+        if _is_exact_wire_format(payload):
+            mode, output_format, dek_raw, iv, message, radix, tweak, key_alg, ofb_flag, c_offset, c_len = _parse_exact_m0_m2(
                 self.hsm, payload, decrypt=False
             )
             if key_alg == "A":
@@ -568,30 +692,49 @@ class M0Handler(BaseCommandHandler):
                 elif mode == "01":
                     encrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CBC, iv=iv).encrypt(message)
                     response_iv = encrypted[-16:]
+                elif mode == "02":
+                    encrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CFB, iv=iv, segment_size=8).encrypt(message)
+                    response_iv = (iv + encrypted)[-16:]
+                elif mode == "03":
+                    encrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CFB, iv=iv, segment_size=64).encrypt(message)
+                    response_iv = (iv + encrypted)[-16:]
+                elif mode == "05":
+                    encrypted, response_iv = _ofb_crypt(dek_raw, message, iv, key_alg)
                 elif mode == "06":
-                    encrypted = aes_ctr_crypt(dek_raw, message, iv)
+                    encrypted = aes_ctr_crypt(dek_raw, message, iv, c_offset, c_len)
                     response_iv = b""
                 elif mode == "11":
                     ff1 = FF1Cipher(dek_raw, radix=radix, tweak=tweak)
                     encrypted = ff1.encrypt(message.decode("ascii")).encode("ascii")
                     response_iv = b""
                 else:
-                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
+                    raise PayShieldException(ErrorCodes.INVALID_MODE, f"Unsupported mode '{mode}'")
             else:
-                key = dek_raw + dek_raw[:8] if len(dek_raw) == 16 else dek_raw
                 if mode == "00":
-                    encrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_ECB).encrypt(message)
+                    cipher = _get_des_cipher(dek_raw, Crypto.Cipher.DES.MODE_ECB if len(dek_raw) == 8 else Crypto.Cipher.DES3.MODE_ECB)
+                    encrypted = cipher.encrypt(message)
                     response_iv = b""
                 elif mode == "01":
-                    encrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_CBC, iv=iv).encrypt(message)
+                    cipher = _get_des_cipher(dek_raw, Crypto.Cipher.DES.MODE_CBC if len(dek_raw) == 8 else Crypto.Cipher.DES3.MODE_CBC, iv=iv)
+                    encrypted = cipher.encrypt(message)
                     response_iv = encrypted[-8:]
+                elif mode == "02":
+                    cipher = _get_des_cipher(dek_raw, Crypto.Cipher.DES.MODE_CFB if len(dek_raw) == 8 else Crypto.Cipher.DES3.MODE_CFB, iv=iv, segment_size=8)
+                    encrypted = cipher.encrypt(message)
+                    response_iv = (iv + encrypted)[-8:]
+                elif mode == "03":
+                    cipher = _get_des_cipher(dek_raw, Crypto.Cipher.DES.MODE_CFB if len(dek_raw) == 8 else Crypto.Cipher.DES3.MODE_CFB, iv=iv, segment_size=64)
+                    encrypted = cipher.encrypt(message)
+                    response_iv = (iv + encrypted)[-8:]
+                elif mode == "05":
+                    encrypted, response_iv = _ofb_crypt(dek_raw, message, iv, key_alg)
                 elif mode == "06":
-                    encrypted = des3_ctr_crypt(dek_raw, message, iv)
+                    encrypted = des3_ctr_crypt(dek_raw, message, iv, c_offset, c_len)
                     response_iv = b""
                 elif mode == "11":
                     raise PayShieldException(ErrorCodes.MODE_REQUIRES_AES_KB_LMK, "FF1 requires AES Key Block LMK")
                 else:
-                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
+                    raise PayShieldException(ErrorCodes.INVALID_MODE, f"Unsupported mode '{mode}'")
             return ErrorCodes.SUCCESS, _format_exact_data_response(output_format, encrypted, response_iv)
 
         payload_str = payload.decode("ascii", errors="ignore")
@@ -667,8 +810,8 @@ class M2Handler(BaseCommandHandler):
         M2 Decrypt Data Handler.
         Supports modes: '00'/'0' (ECB), '01'/'1' (CBC), '06'/'6' (CTR), '11' (FF1 FPE).
         """
-        if payload[:2] in (b"00", b"01", b"06", b"11"):
-            mode, output_format, dek_raw, iv, message, radix, tweak, key_alg = _parse_exact_m0_m2(
+        if _is_exact_wire_format(payload):
+            mode, output_format, dek_raw, iv, message, radix, tweak, key_alg, ofb_flag, c_offset, c_len = _parse_exact_m0_m2(
                 self.hsm, payload, decrypt=True
             )
             if key_alg == "A":
@@ -678,30 +821,49 @@ class M2Handler(BaseCommandHandler):
                 elif mode == "01":
                     decrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CBC, iv=iv).decrypt(message)
                     response_iv = message[-16:]
+                elif mode == "02":
+                    decrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CFB, iv=iv, segment_size=8).decrypt(message)
+                    response_iv = (iv + message)[-16:]
+                elif mode == "03":
+                    decrypted = Crypto.Cipher.AES.new(dek_raw, Crypto.Cipher.AES.MODE_CFB, iv=iv, segment_size=64).decrypt(message)
+                    response_iv = (iv + message)[-16:]
+                elif mode == "05":
+                    decrypted, response_iv = _ofb_crypt(dek_raw, message, iv, key_alg)
                 elif mode == "06":
-                    decrypted = aes_ctr_crypt(dek_raw, message, iv)
-                    response_iv = b""
+                    decrypted = aes_ctr_crypt(dek_raw, message, iv, c_offset, c_len)
+                    response_iv = calc_ctr_output_iv(iv, len(message), 16, c_offset, c_len)
                 elif mode == "11":
                     ff1 = FF1Cipher(dek_raw, radix=radix, tweak=tweak)
                     decrypted = ff1.decrypt(message.decode("ascii")).encode("ascii")
                     response_iv = b""
                 else:
-                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
+                    raise PayShieldException(ErrorCodes.INVALID_MODE, f"Unsupported mode '{mode}'")
             else:
-                key = dek_raw + dek_raw[:8] if len(dek_raw) == 16 else dek_raw
                 if mode == "00":
-                    decrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_ECB).decrypt(message)
+                    cipher = _get_des_cipher(dek_raw, Crypto.Cipher.DES.MODE_ECB if len(dek_raw) == 8 else Crypto.Cipher.DES3.MODE_ECB)
+                    decrypted = cipher.decrypt(message)
                     response_iv = b""
                 elif mode == "01":
-                    decrypted = Crypto.Cipher.DES3.new(key, Crypto.Cipher.DES3.MODE_CBC, iv=iv).decrypt(message)
+                    cipher = _get_des_cipher(dek_raw, Crypto.Cipher.DES.MODE_CBC if len(dek_raw) == 8 else Crypto.Cipher.DES3.MODE_CBC, iv=iv)
+                    decrypted = cipher.decrypt(message)
                     response_iv = message[-8:]
+                elif mode == "02":
+                    cipher = _get_des_cipher(dek_raw, Crypto.Cipher.DES.MODE_CFB if len(dek_raw) == 8 else Crypto.Cipher.DES3.MODE_CFB, iv=iv, segment_size=8)
+                    decrypted = cipher.decrypt(message)
+                    response_iv = (iv + message)[-8:]
+                elif mode == "03":
+                    cipher = _get_des_cipher(dek_raw, Crypto.Cipher.DES.MODE_CFB if len(dek_raw) == 8 else Crypto.Cipher.DES3.MODE_CFB, iv=iv, segment_size=64)
+                    decrypted = cipher.decrypt(message)
+                    response_iv = (iv + message)[-8:]
+                elif mode == "05":
+                    decrypted, response_iv = _ofb_crypt(dek_raw, message, iv, key_alg)
                 elif mode == "06":
-                    decrypted = des3_ctr_crypt(dek_raw, message, iv)
-                    response_iv = b""
+                    decrypted = des3_ctr_crypt(dek_raw, message, iv, c_offset, c_len)
+                    response_iv = calc_ctr_output_iv(iv, len(message), 8, c_offset, c_len)
                 elif mode == "11":
                     raise PayShieldException(ErrorCodes.MODE_REQUIRES_AES_KB_LMK, "FF1 requires AES Key Block LMK")
                 else:
-                    raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Unsupported mode '{mode}'")
+                    raise PayShieldException(ErrorCodes.INVALID_MODE, f"Unsupported mode '{mode}'")
             return ErrorCodes.SUCCESS, _format_exact_data_response(output_format, decrypted, response_iv)
 
         payload_str = payload.decode("ascii", errors="ignore")

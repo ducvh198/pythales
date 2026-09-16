@@ -3,6 +3,9 @@
 import unittest
 import struct
 
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from pythales.hsm import HSM, PyThalesHSM, OutgoingMessage, DummyMessage, A0, BU, CA, CW, CY, DC, EC, HC, NC, NO, parse_message
 from pythales.core.errors import ErrorCodes, PayShieldException
 from pythales.core.frame import MessageFraming, CommandFrame, ResponseFrame

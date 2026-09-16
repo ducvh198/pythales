@@ -50,7 +50,14 @@ pythales/
 │   ├── __init__.py          # Package initialization
 │   ├── hsm.py               # HSM core logic, crypto routines, LMK handling
 │   ├── compat.py            # Python compatibility utilities
-│   └── tests.py             # Unit test suite (80 test cases)
+│   ├── commands/            # HSM command implementations
+│   ├── core/                # Frame parsing, router, error definitions
+│   ├── crypto/              # LMK engine, key block, crypto routines
+│   └── server/              # Asynchronous TCP HSM server
+├── tests/                   # Test suite directory
+│   ├── tests.py             # Core unit test suite
+│   ├── test_hsm_client.py   # Automated TCP test verification client
+│   └── test_*.py            # Functional, adversarial and stress test suites
 ├── examples/
 │   └── hsm_server.py        # Standalone TCP socket server entry point
 ├── Dockerfile               # Production Docker image build (python:3.11-slim)
@@ -58,7 +65,6 @@ pythales/
 ├── .env.example             # Template environment configuration file
 ├── requirements.txt         # Runtime dependencies (pycryptodome, tracetools, pynblock)
 ├── setup.py                 # Package setup and metadata
-├── test_hsm_client.py       # Automated TCP test verification client
 └── README.md                # Project documentation
 ```
 
@@ -234,13 +240,13 @@ The internal test suite validates command frame parsing, outgoing message format
 Run unit tests directly:
 
 ```bash
-python pythales/tests.py
+python tests/tests.py
 ```
 
 Or via standard `unittest` module:
 
 ```bash
-python -m unittest discover pythales
+python -m unittest discover tests
 ```
 
 Expected output:
@@ -259,7 +265,7 @@ OK
 #### Usage Syntax
 
 ```bash
-python test_hsm_client.py [OPTIONS]
+python tests/test_hsm_client.py [OPTIONS]
 ```
 
 #### Client Options
@@ -277,7 +283,7 @@ python test_hsm_client.py [OPTIONS]
 
 2. **Execute client verification** (in another terminal):
    ```bash
-   python test_hsm_client.py --host 127.0.0.1 --port 1500
+   python tests/test_hsm_client.py --host 127.0.0.1 --port 1500
    ```
 
 #### Sample Verification Output

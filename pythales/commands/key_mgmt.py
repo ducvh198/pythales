@@ -23,6 +23,10 @@ KEY_TYPE_VARIANTS = {
     "003": 4,   # CVK (Variant 4)
     "005": 3,   # PVK
     "008": 6,   # ZAK (LMK pair 26-27 in payShield)
+    "009": 1,   # BDK-1 (LMK pair 28-29, variant 1)
+    "609": 6,   # BDK-2 (LMK pair 28-29, variant 6)
+    "809": 8,   # BDK-3 (LMK pair 28-29, variant 8)
+    "909": 9,   # BDK-4 (LMK pair 28-29, variant 9)
     "00A": 8,   # ZEK (LMK pair 30-31 in payShield)
     "00B": 8,   # DEK (LMK pair 32-33 in payShield)
     "30B": 3,   # TEK (LMK pair 32-33, variant 3 in payShield)
