@@ -1,0 +1,116 @@
+# ====================================================================
+# PyThales HSM Simulator - All-in-One Kubernetes Manifest
+# Target Registry: registry.hevitech.io.vn/pythales:latest
+# Protocol: Raw TCP / Thales HSM protocol (port 1500)
+# ====================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pythales-config
+  labels:
+    app.kubernetes.io/name: pythales-hsm
+    app.kubernetes.io/component: simulator
+data:
+  HSM_PORT: "1500"
+  HSM_HEADER: "00000000"
+  HSM_DEBUG: "true"
+  HSM_SKIP_PARITY: "false"
+  HSM_APPROVE_ALL: "false"
+  HSM_MAX_CONNECTIONS: "1000"
+  HSM_IDLE_TIMEOUT: "30.0"
+  HSM_ENABLE_KEEPALIVE: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pythales-secret
+  labels:
+    app.kubernetes.io/name: pythales-hsm
+    app.kubernetes.io/component: simulator
+type: Opaque
+stringData:
+  # 32-hex character Local Master Key (LMK) string
+  HSM_KEY: "deadbeefdeadbeefdeadbeefdeadbeef"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pythales-hsm
+  labels:
+    app.kubernetes.io/name: pythales-hsm
+    app.kubernetes.io/component: simulator
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pythales-hsm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pythales-hsm
+    spec:
+      # Cần tạo secret này trước nếu kéo image từ private registry:
+      # kubectl create secret docker-registry hevitech-registry-secret \
+      #   --docker-server=registry.hevitech.io.vn \
+      #   --docker-username=admin \
+      #   --docker-password=<your-password>
+      imagePullSecrets:
+        - name: hevitech-registry-secret
+      containers:
+        - name: pythales-hsm
+          image: registry.hevitech.io.vn/pythales:latest
+          imagePullPolicy: Always
+          ports:
+            - name: hsm-tcp
+              containerPort: 1500
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: pythales-config
+            - secretRef:
+                name: pythales-secret
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          livenessProbe:
+            tcpSocket:
+              port: 1500
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: 1500
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pythales-hsm
+  labels:
+    app.kubernetes.io/name: pythales-hsm
+    app.kubernetes.io/component: simulator
+spec:
+  # ClusterIP: Cho phép các service khác trong cluster (như ACS Kernel) gọi tới pythales-hsm:1500
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: pythales-hsm
+  ports:
+    - name: hsm-tcp
+      port: 1500
+      targetPort: 1500
+      protocol: TCP

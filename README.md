@@ -240,6 +240,45 @@ docker compose logs -f
 docker compose down
 ```
 
+### 4. Running on Kubernetes (K8s)
+
+Complete Kubernetes manifests are located in the `k8s/` directory:
+- [configmap.yaml](k8s/configmap.yaml): Environment configuration
+- [secret.yaml](k8s/secret.yaml): Local Master Key (LMK)
+- [deployment.yaml](k8s/deployment.yaml): Deployment with health checks (liveness & readiness TCP probes)
+- [service.yaml](k8s/service.yaml): Internal ClusterIP service on port 1500
+- [pythales-all-in-one.yaml](k8s/pythales-all-in-one.yaml): All resources in one file
+
+#### Step 1: Create Image Pull Secret (if pulling from private registry)
+```bash
+kubectl create secret docker-registry hevitech-registry-secret \
+  --docker-server=registry.hevitech.io.vn \
+  --docker-username=admin \
+  --docker-password=<your-password>
+```
+
+#### Step 2: Deploy to Kubernetes
+```bash
+# Option A: Apply all manifests from directory
+kubectl apply -f k8s/
+
+# Option B: Single all-in-one manifest
+kubectl apply -f k8s/pythales-all-in-one.yaml
+```
+
+#### Step 3: Verify Deployment & Service
+```bash
+kubectl get pods -l app.kubernetes.io/name=pythales-hsm
+kubectl get svc pythales-hsm
+kubectl logs -l app.kubernetes.io/name=pythales-hsm -f
+```
+
+#### Step 4: Connecting from Other Services
+Inside the Kubernetes cluster (e.g. from ACS Kernel):
+- **Host**: `pythales-hsm` (or `pythales-hsm.<namespace>.svc.cluster.local`)
+- **Port**: `1500` (TCP)
+
+
 ---
 
 ## Environment Variables Reference
