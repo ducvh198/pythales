@@ -34,6 +34,7 @@ logger = logging.getLogger("pythales.hsm")
 
 class DummyMessage():
     def __init__(self, data):
+        self.data = data
         self.command_code = None
         self.description = None
         self.fields = OrderedDict()
@@ -527,6 +528,33 @@ class LS(DummyMessage):
             rem = rem[1:]
         self.fields['Data Length'] = rem[:5]
         self.fields['Message Data'] = rem[5:]
+
+
+class LU(DummyMessage):
+    """Import an HMAC Key under a ZMK"""
+    def __init__(self, data):
+        self.data = data
+        self.command_code = b'LU'
+        self.description = 'Import an HMAC Key under a ZMK'
+        self.fields = OrderedDict()
+
+
+class LW(DummyMessage):
+    """Export an HMAC Key under a ZMK"""
+    def __init__(self, data):
+        self.data = data
+        self.command_code = b'LW'
+        self.description = 'Export an HMAC Key under a ZMK'
+        self.fields = OrderedDict()
+
+
+class LY(DummyMessage):
+    """Translate an HMAC Key"""
+    def __init__(self, data):
+        self.data = data
+        self.command_code = b'LY'
+        self.description = 'Translate an HMAC Key'
+        self.fields = OrderedDict()
 
 
 class OutgoingMessage(DummyMessage):
@@ -1119,6 +1147,20 @@ class HSM():
             return self.translate_zpk(request)
         elif rqst_command_code == b'HC':
             return self.generate_key(request)
+        elif rqst_command_code and global_router.has_handler(rqst_command_code.decode("ascii", errors="ignore")):
+            cmd_str = rqst_command_code.decode("ascii", errors="ignore")
+            req_data = request.data if hasattr(request, "data") else b""
+            raw_req = self.header + rqst_command_code + req_data
+            resp_bytes = self.process_raw_message(raw_req)
+            resp_body = resp_bytes[len(self.header):] if self.header and resp_bytes.startswith(self.header) else resp_bytes
+            response = OutgoingMessage(header=self.header)
+            if len(resp_body) >= 2:
+                response.set_response_code(resp_body[:2].decode("ascii", errors="ignore"))
+            if len(resp_body) >= 4:
+                response.set_error_code(resp_body[2:4].decode("ascii", errors="ignore"))
+            if len(resp_body) > 4:
+                response.set('Payload', resp_body[4:])
+            return response
         else:
             response = OutgoingMessage(header=self.header)
             response.set_response_code('ZZ')

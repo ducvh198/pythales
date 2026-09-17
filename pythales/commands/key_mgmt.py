@@ -6,6 +6,9 @@ import os
 from binascii import hexlify, unhexlify
 from typing import Tuple, Optional
 
+import hmac
+import hashlib
+
 import Crypto.Cipher.DES3
 import Crypto.Cipher.AES
 from pythales.commands.base import BaseCommandHandler
@@ -31,6 +34,11 @@ KEY_TYPE_VARIANTS = {
     "00B": 8,   # DEK (LMK pair 32-33 in payShield)
     "30B": 3,   # TEK (LMK pair 32-33, variant 3 in payShield)
     "402": 4,   # CVK
+    "061": 1,   # HMAC SHA-1 (LMK pair 34-35, variant 1)
+    "062": 1,   # HMAC SHA-224 (LMK pair 34-35, variant 1)
+    "063": 1,   # HMAC SHA-256 (LMK pair 34-35, variant 1)
+    "064": 1,   # HMAC SHA-384 (LMK pair 34-35, variant 1)
+    "065": 1,   # HMAC SHA-512 (LMK pair 34-35, variant 1)
 }
 
 
@@ -324,9 +332,40 @@ class BUHandler(BaseCommandHandler):
         if len(key_str) > 1 and key_str[0] in ("1", "2", "3") and key_str[1] in ("U", "T", "S", "X", "Y"):
             key_str = key_str[1:]
 
-        if key_str.startswith("S"):
-            _, raw_key = TR31KeyBlock.unwrap(key_str, self.hsm.LMK)
+        if key_str.startswith(("S", "R")):
+            hdr, raw_key = TR31KeyBlock.unwrap(key_str, self.hsm.LMK)
+            if hdr.key_usage in ("61", "62", "63", "64", "65") or hdr.algorithm == "H":
+                hash_algos = {
+                    "61": hashlib.sha1,
+                    "62": hashlib.sha224,
+                    "63": hashlib.sha256,
+                    "64": hashlib.sha384,
+                    "65": hashlib.sha512,
+                }
+                hash_func = hash_algos.get(hdr.key_usage, hashlib.sha256)
+                kcv = hmac.new(raw_key, b"", hash_func).hexdigest()[:6].upper().encode("ascii")
+                return ErrorCodes.SUCCESS, kcv
         else:
+            if key_type in ("061", "062", "063", "064", "065"):
+                hash_algos = {
+                    "061": hashlib.sha1,
+                    "062": hashlib.sha224,
+                    "063": hashlib.sha256,
+                    "064": hashlib.sha384,
+                    "065": hashlib.sha512,
+                }
+                hash_func = hash_algos.get(key_type, hashlib.sha256)
+                hex_data = key_str[1:] if key_str[0] in ("U", "X", "T", "Y", "Z", "S", "R") else key_str
+                try:
+                    enc_key = unhexlify(hex_data)
+                except Exception:
+                    enc_key = hex_data.encode("latin1")
+                pad_len = (8 - (len(enc_key) % 8)) % 8
+                if pad_len != 0:
+                    enc_key = enc_key + (b"\x00" * pad_len)
+                raw_key = self.hsm.lmk_engine.decrypt_under_lmk(enc_key, variant=1)[:hash_func().digest_size]
+                kcv = hmac.new(raw_key, b"", hash_func).hexdigest()[:6].upper().encode("ascii")
+                return ErrorCodes.SUCCESS, kcv
             scheme, enc_key = _parse_key_payload(key_str)
             variant = KEY_TYPE_VARIANTS.get(key_type, 0)
             raw_key = self.hsm.lmk_engine.decrypt_under_lmk(enc_key, variant)

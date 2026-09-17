@@ -1,5 +1,6 @@
-services:
+﻿services:
   hsm_server:
+    image: registry.hevitech.io.vn/pythales:${TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -15,4 +16,3 @@ services:
       HSM_MAX_CONNECTIONS: "${HSM_MAX_CONNECTIONS:-1000}"
       HSM_IDLE_TIMEOUT: "${HSM_IDLE_TIMEOUT:-30.0}"
       HSM_ENABLE_KEEPALIVE: "${HSM_ENABLE_KEEPALIVE:-true}"
-

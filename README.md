@@ -171,10 +171,40 @@ contain sensitive test data, enable this option only while troubleshooting.
 
 The project includes a lightweight, optimized `Dockerfile` based on `python:3.11-slim` and a `docker-compose.yml` configuration for single-command deployment.
 
-### 1. Building the Docker Image
+### 1. Building and Pushing to Registry (registry.hevitech.io.vn)
 
+The repository provides automated scripts to build and push images directly to `registry.hevitech.io.vn`:
+
+**Windows PowerShell:**
+```powershell
+# Build and push with default tag (latest + git commit SHA)
+.\build-and-push.ps1
+
+# Build and push with a specific version tag
+.\build-and-push.ps1 -Tag "0.74" -AdditionalTags "latest"
+
+# Build locally only without pushing
+.\build-and-push.ps1 -NoPush
+```
+
+**Linux / macOS / Git Bash:**
 ```bash
-docker build -t pythales-hsm .
+chmod +x ./build-and-push.sh
+
+# Build and push
+./build-and-push.sh
+
+# Build with custom tag
+./build-and-push.sh -t 0.74 --additional-tag latest
+```
+
+**Docker Compose:**
+```bash
+# Build
+docker compose build
+
+# Push
+docker compose push
 ```
 
 ### 2. Running Container via Docker Run

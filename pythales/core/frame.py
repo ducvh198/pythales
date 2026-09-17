@@ -2,6 +2,7 @@
 Message framing parser and response formatter for PayShield TCP/IP communication.
 """
 
+import string
 import struct
 from dataclasses import dataclass
 from typing import Optional, Union
@@ -73,12 +74,11 @@ class MessageFraming:
 
         rem = body[2:]
         delim_pos = -1
-        if command_code == "LS" and len(rem) >= 12:
+        if command_code == "LQ" and len(rem) >= 12:
             try:
-                hmac_len = int(rem[2:6].decode("ascii"))
-                offset = 6 + hmac_len
-                key_fmt = rem[offset:offset + 2]
-                offset += 6
+                key_fmt = rem[6:8]
+                key_len_field = rem[8:12]
+                offset = 12
                 if key_fmt == b"04":
                     if rem[offset:offset + 1] in (b"S", b"R"):
                         kb_len = 1 + int(rem[offset + 2:offset + 6].decode("ascii"))
@@ -86,8 +86,9 @@ class MessageFraming:
                         kb_len = int(rem[offset + 1:offset + 5].decode("ascii"))
                     offset += kb_len
                 else:
-                    offset += 32
-                if rem[offset:offset + 1] == b";":
+                    key_len = int(key_len_field.decode("ascii"))
+                    offset += key_len
+                if offset < len(rem) and rem[offset:offset + 1] == b";":
                     offset += 1
                 data_len = int(rem[offset:offset + 5].decode("ascii"))
                 offset += 5 + data_len
@@ -98,7 +99,129 @@ class MessageFraming:
                 else:
                     delim_pos = rem.find(b"\x19", offset)
             except Exception:
-                delim_pos = rem.find(b"\x19")
+                delim_pos = -1
+        elif command_code == "LS" and len(rem) >= 12:
+            try:
+                hmac_len = int(rem[2:6].decode("ascii"))
+                offset = 6 + hmac_len
+                key_fmt = rem[offset:offset + 2]
+                key_len_field = rem[offset + 2:offset + 6]
+                offset += 6
+                if key_fmt == b"04":
+                    if rem[offset:offset + 1] in (b"S", b"R"):
+                        kb_len = 1 + int(rem[offset + 2:offset + 6].decode("ascii"))
+                    else:
+                        kb_len = int(rem[offset + 1:offset + 5].decode("ascii"))
+                    offset += kb_len
+                else:
+                    key_len = int(key_len_field.decode("ascii"))
+                    offset += key_len
+                if offset < len(rem) and rem[offset:offset + 1] == b";":
+                    offset += 1
+                data_len = int(rem[offset:offset + 5].decode("ascii"))
+                offset += 5 + data_len
+                if len(rem) > offset and rem[offset:offset + 1] == b"\x19":
+                    delim_pos = offset
+                elif len(rem) == offset:
+                    delim_pos = -1
+                else:
+                    delim_pos = rem.find(b"\x19", offset)
+            except Exception:
+                delim_pos = -1
+        elif command_code == "LU" and len(rem) >= 16:
+            try:
+                if rem.startswith((b"S", b"R")):
+                    if rem.startswith(b"S") and len(rem) >= 5 and rem[1:5].isdigit():
+                        zmk_len = int(rem[1:5].decode("ascii"))
+                    elif len(rem) >= 6 and rem[2:6].isdigit():
+                        zmk_len = 1 + int(rem[2:6].decode("ascii"))
+                    else:
+                        zmk_len = 16
+                else:
+                    scheme = chr(rem[0]).upper()
+                    if scheme in ("U", "X", "M"):
+                        zmk_len = 33
+                    elif scheme in ("T", "Y"):
+                        zmk_len = 49
+                    elif scheme in ("D", "A"):
+                        zmk_len = 33 if len(rem) >= 33 else 17
+                    elif scheme == "E":
+                        zmk_len = 49 if len(rem) >= 49 else (33 if len(rem) >= 33 else 17)
+                    elif scheme == "Z":
+                        zmk_len = 17
+                    else:
+                        zmk_len = 48 if len(rem) >= 48 and all(chr(c) in string.hexdigits for c in rem[:48]) else 32
+                offset = zmk_len
+                len_field = rem[offset:offset + 4]
+                offset += 4
+                if len_field == b"FFFF":
+                    if rem[offset:offset + 1] in (b"S", b"R"):
+                        kb_len = 1 + int(rem[offset + 2:offset + 6].decode("ascii"))
+                    else:
+                        kb_len = int(rem[offset + 1:offset + 5].decode("ascii"))
+                    offset += kb_len
+                else:
+                    key_len = int(len_field.decode("ascii"))
+                    offset += key_len
+                delim_pos = rem.find(b"\x19", offset)
+            except Exception:
+                delim_pos = -1
+        elif command_code == "LW" and len(rem) >= 16:
+            try:
+                if rem.startswith((b"S", b"R")):
+                    if rem.startswith(b"S") and len(rem) >= 5 and rem[1:5].isdigit():
+                        zmk_len = int(rem[1:5].decode("ascii"))
+                    elif len(rem) >= 6 and rem[2:6].isdigit():
+                        zmk_len = 1 + int(rem[2:6].decode("ascii"))
+                    else:
+                        zmk_len = 16
+                else:
+                    scheme = chr(rem[0]).upper()
+                    if scheme in ("U", "X", "M"):
+                        zmk_len = 33
+                    elif scheme in ("T", "Y"):
+                        zmk_len = 49
+                    elif scheme in ("D", "A"):
+                        zmk_len = 33 if len(rem) >= 33 else 17
+                    elif scheme == "E":
+                        zmk_len = 49 if len(rem) >= 49 else (33 if len(rem) >= 33 else 17)
+                    elif scheme == "Z":
+                        zmk_len = 17
+                    else:
+                        zmk_len = 48 if len(rem) >= 48 and all(chr(c) in string.hexdigits for c in rem[:48]) else 32
+                offset = zmk_len
+                lmk_fmt = rem[offset:offset + 2]
+                key_len_field = rem[offset + 4:offset + 8]
+                offset += 8
+                if lmk_fmt == b"04":
+                    if rem[offset:offset + 1] in (b"S", b"R"):
+                        kb_len = 1 + int(rem[offset + 2:offset + 6].decode("ascii"))
+                    else:
+                        kb_len = int(rem[offset + 1:offset + 5].decode("ascii"))
+                    offset += kb_len
+                else:
+                    key_len = int(key_len_field.decode("ascii"))
+                    offset += key_len
+                delim_pos = rem.find(b"\x19", offset)
+            except Exception:
+                delim_pos = -1
+        elif command_code == "LY" and len(rem) >= 8:
+            try:
+                in_fmt = rem[:2]
+                key_len_field = rem[4:8]
+                offset = 8
+                if in_fmt == b"04":
+                    if rem[offset:offset + 1] in (b"S", b"R"):
+                        kb_len = 1 + int(rem[offset + 2:offset + 6].decode("ascii"))
+                    else:
+                        kb_len = int(rem[offset + 1:offset + 5].decode("ascii"))
+                    offset += kb_len
+                else:
+                    key_len = int(key_len_field.decode("ascii"))
+                    offset += key_len
+                delim_pos = rem.find(b"\x19", offset)
+            except Exception:
+                delim_pos = -1
         else:
             delim_pos = rem.find(b"\x19")
 

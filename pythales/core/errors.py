@@ -34,7 +34,13 @@ class ErrorCodes:
     INVALID_OUTPUT_FORMAT = "04"
     INVALID_COMMAND_KEY_TYPE = "05"
     INVALID_MESSAGE_LENGTH = "06"
+    INVALID_KEY_FORMAT = "07"
+    HMAC_KEY_ERROR = "08"
     FPE_CHARACTER_ERROR = "09"
+    HMAC_LENGTH_ERROR = "04"
+    INVALID_HASH_IDENTIFIER = "05"
+    INVALID_HMAC_KEY_USAGE = "06"
+    INVALID_TRANSPORT_FORMAT = "03"
     MODE_REQUIRES_AES_KB_LMK = "D1"
     MODE_REQUIRES_AES_KEY = "D2"
 
@@ -59,7 +65,7 @@ class ErrorCodes:
     INVALID_RANDOM_VALUE_LENGTH = VERIFICATION_FAILURE
 
     ALL_CODES = (
-        '00', '01', '02', '03', '04', '05', '10', '11', '12', '13',
+        '00', '01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12', '13',
         '15', '17', '21', '23', '26', '27', '28', '29', '41', '67',
         '68', '80', '83', '90', 'A6', 'A7', 'A8', 'BC', 'D1', 'D2'
     )
@@ -68,9 +74,13 @@ class ErrorCodes:
         "00": "No error / Success",
         "01": "Verification failure or imported-key parity warning",
         "02": "Key inappropriate length for algorithm",
-        "03": "Command-specific key error",
-        "04": "Invalid key type code",
-        "05": "Invalid key length flag",
+        "03": "Command-specific key error / invalid transport format",
+        "04": "Invalid key type code / HMAC length error",
+        "05": "Invalid key length flag / invalid hash identifier",
+        "06": "Invalid HMAC key usage / invalid message length",
+        "07": "Invalid key format",
+        "08": "HMAC key error",
+        "09": "FPE character error",
         "10": "Source key parity error",
         "11": "Destination key parity error or key all zeros",
         "12": "Contents of user storage not available",

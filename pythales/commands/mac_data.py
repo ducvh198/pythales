@@ -9,6 +9,7 @@ Data Protection & MAC Command Handlers:
 
 import os
 import math
+import string
 import hmac
 import hashlib
 from binascii import hexlify, unhexlify
@@ -1110,6 +1111,78 @@ HASH_ALGO_BY_ID = {
 }
 
 
+HASH_ID_BY_USAGE = {
+    "61": "01",
+    "62": "05",
+    "63": "06",
+    "64": "07",
+    "65": "08",
+}
+
+USAGE_BY_HASH_ID = {
+    "01": "61",
+    "05": "62",
+    "06": "63",
+    "07": "64",
+    "08": "65",
+}
+
+
+def _extract_zmk_for_hmac(hsm, payload: bytes) -> Tuple[bytes, bytes]:
+    """
+    Extracts and decrypts ZMK from the start of payload.
+    Returns (clear_zmk_bytes, rem_payload_bytes).
+    """
+    if not payload:
+        raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Empty payload for ZMK extraction")
+
+    if payload.startswith((b"S", b"R")):
+        if payload.startswith(b"S") and len(payload) >= 5 and payload[1:5].isdigit():
+            kb_len = int(payload[1:5].decode("ascii"))
+        elif len(payload) >= 6 and payload[2:6].isdigit():
+            kb_len = 1 + int(payload[2:6].decode("ascii"))
+        else:
+            kb_len = 16
+        zmk_block = payload[:kb_len].decode("ascii")
+        rem = payload[kb_len:]
+        _, clear_zmk = TR31KeyBlock.unwrap(zmk_block, hsm.LMK)
+        return clear_zmk, rem
+
+    scheme = chr(payload[0]).upper()
+    if scheme in ("U", "X", "M"):
+        target_len = 33
+    elif scheme in ("T", "Y"):
+        target_len = 49
+    elif scheme in ("D", "A"):
+        target_len = 33 if len(payload) >= 33 else 17
+    elif scheme == "E":
+        target_len = 49 if len(payload) >= 49 else (33 if len(payload) >= 33 else 17)
+    elif scheme == "Z":
+        target_len = 17
+    else:
+        target_len = 48 if len(payload) >= 48 and all(chr(c) in string.hexdigits for c in payload[:48]) else 32
+
+    zmk_str = payload[:target_len].decode("ascii")
+    rem = payload[target_len:]
+    _, enc_zmk = _parse_key_payload(zmk_str)
+    clear_zmk = hsm.lmk_engine.decrypt_under_lmk(enc_zmk, variant=KEY_TYPE_VARIANTS["000"])
+    return clear_zmk, rem
+
+
+def _encrypt_hmac_under_lmk(lmk_engine, raw_key: bytes) -> bytes:
+    pad_len = (8 - (len(raw_key) % 8)) % 8
+    padded = raw_key + (b"\x00" * pad_len)
+    return lmk_engine.encrypt_under_lmk(padded, variant=1)
+
+
+def _decrypt_hmac_under_lmk(lmk_engine, enc_key: bytes, key_len: int) -> bytes:
+    pad_len = (8 - (len(enc_key) % 8)) % 8
+    if pad_len != 0:
+        enc_key = enc_key + (b"\x00" * pad_len)
+    decrypted = lmk_engine.decrypt_under_lmk(enc_key, variant=1)
+    return decrypted[:key_len]
+
+
 @global_router.register("L0")
 class L0Handler(BaseCommandHandler):
     """
@@ -1117,32 +1190,32 @@ class L0Handler(BaseCommandHandler):
     Returns L1 + '00' + Key Length ('FFFF' for Key Block) + HMAC Key Block (without scheme prefix).
     """
     def handle_payload(self, payload: bytes) -> Tuple[str, bytes]:
-        payload_str = payload.decode("ascii", errors="ignore")
-        if len(payload_str) < 10:
+        if len(payload) < 10:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "L0 payload too short")
 
-        hash_id = payload_str[:2]
-        hmac_usage = payload_str[2:4]
         try:
-            key_len_bytes = int(payload_str[4:8])
-        except ValueError:
-            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Invalid HMAC key length field: {payload_str[4:8]}")
-        key_format = payload_str[8:10]
+            hash_id = payload[:2].decode("ascii")
+            hmac_usage = payload[2:4].decode("ascii")
+            key_len_bytes = int(payload[4:8].decode("ascii"))
+            key_format = payload[8:10].decode("ascii")
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Invalid L0 header fields: {exc}")
 
-        rem = payload_str[10:]
-        if "%" in rem:
-            rem = rem.split("%", 1)[0]
-        if "\x19" in rem:
-            rem = rem.split("\x19", 1)[0]
+        if key_format not in ("00", "04"):
+            raise PayShieldException(ErrorCodes.INVALID_KEY_FORMAT, f"Invalid HMAC key format: {key_format}")
 
-        key_usage = "63"
+        rem = payload[10:]
+        if b"%" in rem:
+            rem = rem.split(b"%", 1)[0]
+
+        key_usage = USAGE_BY_HASH_ID.get(hash_id, "63")
         algorithm = "H0"
         mode_of_use = "C"
         key_version = "00"
         exportability = "E"
 
-        if "#" in rem:
-            spec = rem.split("#", 1)[1]
+        if b"#" in rem:
+            spec = rem.split(b"#", 1)[1].decode("ascii", errors="ignore")
             if len(spec) >= 2:
                 key_usage = spec[:2]
             if len(spec) >= 4:
@@ -1154,9 +1227,22 @@ class L0Handler(BaseCommandHandler):
             if len(spec) >= 8:
                 exportability = spec[7]
 
+        if key_format == "00":
+            if hash_id not in HASH_ALGO_BY_ID:
+                raise PayShieldException(ErrorCodes.INVALID_HASH_IDENTIFIER, f"Invalid hash ID: {hash_id}")
+            if hmac_usage not in ("01", "02", "03"):
+                raise PayShieldException(ErrorCodes.INVALID_HMAC_KEY_USAGE, f"Invalid HMAC key usage: {hmac_usage}")
+            digest_len = HASH_ALGO_BY_ID[hash_id]().digest_size
+            if key_len_bytes < digest_len // 2:
+                raise PayShieldException(ErrorCodes.HMAC_LENGTH_ERROR, f"HMAC key length {key_len_bytes} is less than L/2 ({digest_len // 2})")
+        else:
+            digest_len = HASH_ALGO_BY_USAGE.get(key_usage, hashlib.sha256)().digest_size
+            if key_len_bytes < digest_len // 2:
+                raise PayShieldException(ErrorCodes.HMAC_LENGTH_ERROR, f"HMAC key length {key_len_bytes} is less than L/2 ({digest_len // 2})")
+
         raw_key = os.urandom(key_len_bytes)
 
-        if key_format == "04" or "#" in payload_str:
+        if key_format == "04" or b"#" in payload:
             hdr = TR31Header(
                 version_id="1",
                 key_length=128,
@@ -1171,8 +1257,8 @@ class L0Handler(BaseCommandHandler):
             key_block = TR31KeyBlock.wrap(raw_key, hdr, self.hsm.LMK)
             resp_payload = b"FFFF" + key_block
         else:
-            enc_key = self.hsm.lmk_engine.encrypt_under_lmk(raw_key, variant=1)
-            resp_payload = f"{key_len_bytes:04d}".encode("ascii") + enc_key
+            enc_key = _encrypt_hmac_under_lmk(self.hsm.lmk_engine, raw_key)
+            resp_payload = f"{len(enc_key):04d}".encode("ascii") + enc_key
 
         return ErrorCodes.SUCCESS, resp_payload
 
@@ -1194,6 +1280,9 @@ class LQHandler(BaseCommandHandler):
             key_len_field = payload[8:12].decode("ascii")
         except (UnicodeDecodeError, ValueError) as exc:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, f"Invalid LQ header fields: {exc}")
+
+        if key_format not in ("00", "04"):
+            raise PayShieldException(ErrorCodes.INVALID_KEY_FORMAT, f"Invalid key format: '{key_format}'")
 
         rem = payload[12:]
 
@@ -1217,29 +1306,45 @@ class LQHandler(BaseCommandHandler):
                 raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid data length in LQ payload")
 
             message_data = rem_after_key[5:5 + data_len]
+            rem_after_data = rem_after_key[5 + data_len:]
 
             hdr, clear_key = TR31KeyBlock.unwrap(key_bytes_block.decode("ascii"), self.hsm.LMK)
-            hash_func = HASH_ALGO_BY_USAGE.get(hdr.key_usage, hashlib.sha256)
+            if hdr.key_usage not in HASH_ALGO_BY_USAGE:
+                raise PayShieldException(ErrorCodes.INVALID_KEY_USAGE, f"Invalid HMAC Key Block usage: {hdr.key_usage}")
+            if hdr.mode_of_use not in ("C", "G", "N"):
+                raise PayShieldException(ErrorCodes.INVALID_MODE_OF_USE, f"Invalid HMAC Key Block mode of use: {hdr.mode_of_use}")
+            hash_func = HASH_ALGO_BY_USAGE[hdr.key_usage]
         else:
+            if hash_id not in HASH_ALGO_BY_ID:
+                raise PayShieldException(ErrorCodes.INVALID_HASH_IDENTIFIER, f"Invalid hash identifier: '{hash_id}'")
             try:
                 enc_key_len = int(key_len_field)
             except ValueError:
                 enc_key_len = 32
             enc_key = rem[:enc_key_len]
             rem_after_key = rem[enc_key_len:]
-            if rem_after_key.startswith(b";"):
-                rem_after_key = rem_after_key[1:]
+            if not rem_after_key.startswith(b";"):
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing ';' delimiter in LQ payload for Variant LMK")
+            rem_after_key = rem_after_key[1:]
+            if len(rem_after_key) < 5:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing data length in LQ payload")
             data_len = int(rem_after_key[:5].decode("ascii"))
             message_data = rem_after_key[5:5 + data_len]
-            clear_key = self.hsm.lmk_engine.decrypt_under_lmk(enc_key, variant=1)
-            hash_func = HASH_ALGO_BY_ID.get(hash_id, hashlib.sha256)
+            rem_after_data = rem_after_key[5 + data_len:]
+            hash_func = HASH_ALGO_BY_ID[hash_id]
+            clear_key = _decrypt_hmac_under_lmk(self.hsm.lmk_engine, enc_key, hash_func().digest_size)
+
+        digest_size = hash_func().digest_size
+        if not (digest_size // 2 <= hmac_len <= digest_size):
+            raise PayShieldException(ErrorCodes.HMAC_LENGTH_ERROR, f"HMAC length {hmac_len} out of range [{digest_size//2}, {digest_size}]")
 
         mac = hmac.new(clear_key, message_data, hash_func).digest()
         if hmac_len < len(mac):
             mac = mac[:hmac_len]
 
         hmac_len_str = f"{hmac_len:04d}".encode("ascii")
-        return ErrorCodes.SUCCESS, hmac_len_str + mac
+        resp_payload = hmac_len_str + mac
+        return ErrorCodes.SUCCESS, resp_payload
 
 
 @global_router.register("LS")
@@ -1271,6 +1376,9 @@ class LSHandler(BaseCommandHandler):
         except UnicodeDecodeError:
             raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid key format or length in LS")
 
+        if key_format not in ("00", "04"):
+            raise PayShieldException(ErrorCodes.INVALID_KEY_FORMAT, f"Invalid key format: '{key_format}'")
+
         rem_key = rem[6:]
 
         if key_format == "04":
@@ -1293,22 +1401,37 @@ class LSHandler(BaseCommandHandler):
                 raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Invalid data length in LS payload")
 
             message_data = rem_after_key[5:5 + data_len]
+            rem_after_data = rem_after_key[5 + data_len:]
 
             hdr, clear_key = TR31KeyBlock.unwrap(key_bytes_block.decode("ascii"), self.hsm.LMK)
-            hash_func = HASH_ALGO_BY_USAGE.get(hdr.key_usage, hashlib.sha256)
+            if hdr.key_usage not in HASH_ALGO_BY_USAGE:
+                raise PayShieldException(ErrorCodes.INVALID_KEY_USAGE, f"Invalid HMAC Key Block usage: {hdr.key_usage}")
+            if hdr.mode_of_use not in ("C", "V", "N"):
+                raise PayShieldException(ErrorCodes.INVALID_MODE_OF_USE, f"Invalid HMAC Key Block mode of use: {hdr.mode_of_use}")
+            hash_func = HASH_ALGO_BY_USAGE[hdr.key_usage]
         else:
+            if hash_id not in HASH_ALGO_BY_ID:
+                raise PayShieldException(ErrorCodes.INVALID_HASH_IDENTIFIER, f"Invalid hash identifier: '{hash_id}'")
             try:
                 enc_key_len = int(key_len_field)
             except ValueError:
                 enc_key_len = 32
             enc_key = rem_key[:enc_key_len]
             rem_after_key = rem_key[enc_key_len:]
-            if rem_after_key.startswith(b";"):
-                rem_after_key = rem_after_key[1:]
+            if not rem_after_key.startswith(b";"):
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing ';' delimiter in LS payload for Variant LMK")
+            rem_after_key = rem_after_key[1:]
+            if len(rem_after_key) < 5:
+                raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "Missing data length in LS payload")
             data_len = int(rem_after_key[:5].decode("ascii"))
             message_data = rem_after_key[5:5 + data_len]
-            clear_key = self.hsm.lmk_engine.decrypt_under_lmk(enc_key, variant=1)
-            hash_func = HASH_ALGO_BY_ID.get(hash_id, hashlib.sha256)
+            rem_after_data = rem_after_key[5 + data_len:]
+            hash_func = HASH_ALGO_BY_ID[hash_id]
+            clear_key = _decrypt_hmac_under_lmk(self.hsm.lmk_engine, enc_key, hash_func().digest_size)
+
+        digest_size = hash_func().digest_size
+        if not (digest_size // 2 <= hmac_len <= digest_size):
+            raise PayShieldException(ErrorCodes.HMAC_LENGTH_ERROR, f"HMAC length {hmac_len} out of range")
 
         expected_mac = hmac.new(clear_key, message_data, hash_func).digest()
         if hmac_len < len(expected_mac):
@@ -1318,3 +1441,248 @@ class LSHandler(BaseCommandHandler):
             return ErrorCodes.SUCCESS, b""
         else:
             return ErrorCodes.VERIFICATION_FAILURE, b""
+
+
+@global_router.register("LU")
+class LUHandler(BaseCommandHandler):
+    """
+    LU Import an HMAC Key under a ZMK.
+    Returns LV + '00' + Key Length ('FFFF' or 4 N) + HMAC Key under LMK.
+    """
+    def handle_payload(self, payload: bytes) -> Tuple[str, bytes]:
+        clear_zmk, rem = _extract_zmk_for_hmac(self.hsm, payload)
+        if len(rem) < 4:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "LU payload too short after ZMK")
+
+        len_field = rem[:4]
+        if len_field == b"FFFF":
+            rem_kb = rem[4:]
+            if rem_kb.startswith(b"R"):
+                kb_len = 1 + int(rem_kb[2:6].decode("ascii"))
+                kb_str = rem_kb[:kb_len].decode("ascii")
+                rem_after = rem_kb[kb_len:]
+                transport_format = rem_after[:2].decode("ascii")
+                lmk_format = rem_after[2:4].decode("ascii")
+                rem_fields = rem_after[4:]
+                hdr, raw_key = TR31KeyBlock.unwrap(kb_str, clear_zmk)
+                hash_id = HASH_ID_BY_USAGE.get(hdr.key_usage, "06")
+                key_usage = "03"
+            else:
+                if rem_kb.startswith(b"S"):
+                    kb_len = int(rem_kb[1:5].decode("ascii"))
+                elif len(rem_kb) >= 6 and rem_kb[2:6].isdigit():
+                    kb_len = 1 + int(rem_kb[2:6].decode("ascii"))
+                else:
+                    kb_len = int(rem_kb[1:5].decode("ascii"))
+                kb_str = rem_kb[:kb_len].decode("ascii")
+                rem_after = rem_kb[kb_len:]
+                transport_format = rem_after[:2].decode("ascii")
+                lmk_format = rem_after[2:4].decode("ascii")
+                rem_fields = rem_after[4:]
+                hdr, raw_key = TR31KeyBlock.unwrap(kb_str, clear_zmk)
+                hash_id = HASH_ID_BY_USAGE.get(hdr.key_usage, "06")
+                key_usage = "03"
+        else:
+            key_len = int(len_field.decode("ascii"))
+            enc_key_zmk = rem[4:4 + key_len]
+            rem_after = rem[4 + key_len:]
+            if rem_after.startswith(b";"):
+                rem_after = rem_after[1:]
+            transport_format = rem_after[:2].decode("ascii")
+            lmk_format = rem_after[2:4].decode("ascii")
+            rem_fields = rem_after[4:]
+
+            if transport_format in ("01", "02", "03"):
+                hash_id = rem_fields[:2].decode("ascii")
+                key_usage = rem_fields[2:4].decode("ascii")
+                orig_key_len = int(rem_fields[4:8].decode("ascii"))
+                rem_fields = rem_fields[8:]
+            else:
+                hash_id = "06"
+                key_usage = "03"
+                orig_key_len = key_len
+
+            des_key = clear_zmk if len(clear_zmk) in (16, 24) else (clear_zmk[:8] * 2 if len(clear_zmk) == 8 else clear_zmk[:24])
+            if transport_format == "02":
+                cipher = Crypto.Cipher.DES3.new(des_key, Crypto.Cipher.DES3.MODE_CBC, iv=b"\x00" * 8)
+            else:
+                cipher = Crypto.Cipher.DES3.new(des_key, Crypto.Cipher.DES3.MODE_ECB)
+            decrypted = cipher.decrypt(enc_key_zmk)
+            raw_key = decrypted[:orig_key_len]
+
+        trailer = b""
+        if b"\x19" in rem_fields:
+            trailer = rem_fields.split(b"\x19", 1)[1]
+
+        if lmk_format == "04" or b"#" in rem_fields:
+            target_usage = USAGE_BY_HASH_ID.get(hash_id, "63")
+            target_mode = "C"
+            if b"#" in rem_fields:
+                spec = rem_fields.split(b"#", 1)[1].decode("ascii", errors="ignore")
+                if len(spec) >= 2: target_usage = spec[:2]
+                if len(spec) >= 5: target_mode = spec[4]
+            hdr = TR31Header(
+                version_id="1",
+                key_length=128,
+                key_usage=target_usage,
+                algorithm="H",
+                mode_of_use=target_mode,
+                key_version="00",
+                exportability="E",
+                optional_headers=b"",
+                lmk_identifier="00",
+            )
+            key_block = TR31KeyBlock.wrap(raw_key, hdr, self.hsm.LMK)
+            resp_payload = b"FFFF" + key_block
+        else:
+            enc_key_lmk = _encrypt_hmac_under_lmk(self.hsm.lmk_engine, raw_key)
+            resp_payload = f"{len(enc_key_lmk):04d}".encode("ascii") + enc_key_lmk
+
+        return ErrorCodes.SUCCESS, resp_payload
+
+
+@global_router.register("LW")
+class LWHandler(BaseCommandHandler):
+    """
+    LW Export an HMAC Key under a ZMK.
+    Returns LX + '00' + exported key payload.
+    """
+    def handle_payload(self, payload: bytes) -> Tuple[str, bytes]:
+        clear_zmk, rem = _extract_zmk_for_hmac(self.hsm, payload)
+        if len(rem) < 8:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "LW payload too short after ZMK")
+
+        lmk_key_format = rem[:2].decode("ascii")
+        transport_format = rem[2:4].decode("ascii")
+        key_len_field = rem[4:8].decode("ascii")
+        rem_key = rem[8:]
+
+        if lmk_key_format == "04":
+            if rem_key.startswith((b"S", b"R")):
+                kb_len = 1 + int(rem_key[2:6].decode("ascii"))
+            else:
+                kb_len = int(rem_key[1:5].decode("ascii"))
+            kb_str = rem_key[:kb_len].decode("ascii")
+            rem_after = rem_key[kb_len:]
+            hdr, raw_key = TR31KeyBlock.unwrap(kb_str, self.hsm.LMK)
+            hash_id = HASH_ID_BY_USAGE.get(hdr.key_usage, "06")
+            key_usage = "03" if hdr.mode_of_use in ("C", "N") else ("01" if hdr.mode_of_use == "G" else "02")
+        else:
+            key_len = int(key_len_field)
+            enc_key = rem_key[:key_len]
+            rem_after = rem_key[key_len:]
+            raw_key = _decrypt_hmac_under_lmk(self.hsm.lmk_engine, enc_key, key_len)
+            hash_id = "06"
+            key_usage = "03"
+
+        des_key = clear_zmk if len(clear_zmk) in (16, 24) else (clear_zmk[:8] * 2 if len(clear_zmk) == 8 else clear_zmk[:24])
+        if transport_format in ("00", "01", "02", "03"):
+            pad_len = (8 - (len(raw_key) % 8)) % 8
+            padded = raw_key + (b"\x00" * pad_len)
+            if transport_format == "02":
+                cipher = Crypto.Cipher.DES3.new(des_key, Crypto.Cipher.DES3.MODE_CBC, iv=b"\x00" * 8)
+            else:
+                cipher = Crypto.Cipher.DES3.new(des_key, Crypto.Cipher.DES3.MODE_ECB)
+            enc_zmk = cipher.encrypt(padded)
+            if transport_format == "00":
+                resp_payload = f"{len(enc_zmk):04d}".encode("ascii") + enc_zmk
+            else:
+                resp_payload = f"{len(enc_zmk):04d}".encode("ascii") + enc_zmk + hash_id.encode("ascii") + key_usage.encode("ascii") + f"{len(raw_key):04d}".encode("ascii")
+        elif transport_format == "04":
+            usage = USAGE_BY_HASH_ID.get(hash_id, "63")
+            hdr_zmk = TR31Header(
+                version_id="1",
+                key_length=128,
+                key_usage=usage,
+                algorithm="H",
+                mode_of_use="C",
+                key_version="00",
+                exportability="E",
+                optional_headers=b"",
+                lmk_identifier="00",
+            )
+            kb_zmk = TR31KeyBlock.wrap(raw_key, hdr_zmk, clear_zmk)
+            resp_payload = b"FFFF" + kb_zmk
+        elif transport_format == "05":
+            v_id = "D" if len(clear_zmk) in (16, 24, 32) else "B"
+            hdr_zmk = TR31Header(
+                version_id=v_id,
+                key_length=128,
+                key_usage="M7",
+                algorithm="H",
+                mode_of_use="C",
+                key_version="00",
+                exportability="E",
+                optional_headers=b"HM0021",
+                lmk_identifier="00",
+            )
+            kb_zmk = TR31KeyBlock.wrap(raw_key, hdr_zmk, clear_zmk)
+            resp_payload = f"{len(kb_zmk):04X}".encode("ascii") + b"R" + kb_zmk
+        else:
+            raise PayShieldException(ErrorCodes.INVALID_TRANSPORT_FORMAT, f"Invalid transport format: {transport_format}")
+
+        return ErrorCodes.SUCCESS, resp_payload
+
+
+@global_router.register("LY")
+class LYHandler(BaseCommandHandler):
+    """
+    LY Translate an HMAC Key from Old LMK to New LMK or migrate format.
+    Returns LZ + '00' + translated key payload.
+    """
+    def handle_payload(self, payload: bytes) -> Tuple[str, bytes]:
+        if len(payload) < 8:
+            raise PayShieldException(ErrorCodes.INVALID_INPUT_DATA, "LY payload too short")
+
+        input_format = payload[:2].decode("ascii")
+        output_format = payload[2:4].decode("ascii")
+        key_len_field = payload[4:8].decode("ascii")
+        rem = payload[8:]
+
+        if input_format not in ("00", "04"):
+            raise PayShieldException(ErrorCodes.INVALID_KEY_FORMAT, f"Invalid input HMAC key format: {input_format}")
+        if output_format not in ("00", "04"):
+            raise PayShieldException(ErrorCodes.INVALID_TRANSPORT_FORMAT, f"Invalid output HMAC key format: {output_format}")
+
+        if input_format == "04":
+            if rem.startswith((b"S", b"R")):
+                kb_len = 1 + int(rem[2:6].decode("ascii"))
+            else:
+                kb_len = int(rem[1:5].decode("ascii"))
+            kb_str = rem[:kb_len].decode("ascii")
+            rem_after = rem[kb_len:]
+            hdr, raw_key = TR31KeyBlock.unwrap(kb_str, self.hsm.LMK)
+            target_usage = hdr.key_usage
+            target_mode = hdr.mode_of_use
+        else:
+            key_len = int(key_len_field)
+            enc_key = rem[:key_len]
+            rem_after = rem[key_len:]
+            raw_key = _decrypt_hmac_under_lmk(self.hsm.lmk_engine, enc_key, key_len)
+            target_usage = "63"
+            target_mode = "C"
+
+        if b"#" in rem_after:
+            spec = rem_after.split(b"#", 1)[1].decode("ascii", errors="ignore")
+            if len(spec) >= 2: target_usage = spec[:2]
+            if len(spec) >= 5: target_mode = spec[4]
+
+        if output_format == "04":
+            hdr = TR31Header(
+                version_id="1",
+                key_length=128,
+                key_usage=target_usage,
+                algorithm="H",
+                mode_of_use=target_mode,
+                key_version="00",
+                exportability="E",
+                optional_headers=b"",
+                lmk_identifier="00",
+            )
+            key_block = TR31KeyBlock.wrap(raw_key, hdr, self.hsm.LMK)
+            resp_payload = b"FFFF" + key_block
+        else:
+            enc_key = _encrypt_hmac_under_lmk(self.hsm.lmk_engine, raw_key)
+            resp_payload = f"{len(enc_key):04d}".encode("ascii") + enc_key
+
+        return ErrorCodes.SUCCESS, resp_payload

@@ -17,6 +17,11 @@ class CommandRouter:
             return cls
         return decorator
 
+    def has_handler(self, command_code: str) -> bool:
+        if not self._handlers:
+            import pythales.commands
+        return command_code.upper() in self._handlers
+
     def get_handler_class(self, command_code: str) -> Type:
         if not self._handlers:
             import pythales.commands
